@@ -81,6 +81,10 @@ export const jobsApi = {
   downloadGCode: (id: string) =>
     http.get(`/jobs/${id}/gcode`, { responseType: 'blob' }).then(r => r.data),
 
+  mergeBeds: (jobIds: string[], layerStep: number, name?: string) =>
+    http.post<{ jobId: string; mergedPath: string; beds: number; layerStep: number; totalLayers: number }>(
+      '/jobs/merge-beds', { jobIds, layerStep, name }).then(r => r.data),
+
   deleteJob: (id: string) => http.delete(`/jobs/${id}`),
 }
 

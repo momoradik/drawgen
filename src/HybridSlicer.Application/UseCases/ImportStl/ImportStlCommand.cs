@@ -15,7 +15,9 @@ public sealed record ImportStlCommand(
     string InfillPattern = "grid",
     double? InfillDensityPct = null,
     string SupportInfillPattern = "grid",
-    double? SupportInfillDensityPct = null) : IRequest<ImportStlResult>;
+    double? SupportInfillDensityPct = null,
+    int? BedIndex = null,
+    Guid? ParentJobId = null) : IRequest<ImportStlResult>;
 
 public sealed record ImportStlResult(
     Guid JobId,

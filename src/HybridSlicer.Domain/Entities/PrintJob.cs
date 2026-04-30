@@ -29,6 +29,12 @@ public class PrintJob
     public string SupportInfillPattern { get; private set; } = "grid";
     public double? SupportInfillDensityPct { get; private set; }
 
+    // Multi-bed: which bed this job belongs to (0-based). Null = single-bed / legacy.
+    public int? BedIndex { get; private set; }
+
+    // Multi-bed: parent job ID that groups all beds together. Null = standalone job.
+    public Guid? ParentJobId { get; private set; }
+
     // Generated artefact paths (relative to job storage root)
     public string? PrintGCodePath { get; private set; }
     public string? ToolpathGCodePath { get; private set; }
@@ -58,7 +64,9 @@ public class PrintJob
         string infillPattern = "grid",
         double? infillDensityPct = null,
         string supportInfillPattern = "grid",
-        double? supportInfillDensityPct = null)
+        double? supportInfillDensityPct = null,
+        int? bedIndex = null,
+        Guid? parentJobId = null)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new DomainException("INVALID_NAME", "Job name must not be empty.");
@@ -81,6 +89,8 @@ public class PrintJob
             InfillDensityPct = infillDensityPct is > 0 and <= 100 ? infillDensityPct : null,
             SupportInfillPattern = string.IsNullOrWhiteSpace(supportInfillPattern) ? "grid" : supportInfillPattern,
             SupportInfillDensityPct = supportInfillDensityPct is > 0 and <= 100 ? supportInfillDensityPct : null,
+            BedIndex = bedIndex,
+            ParentJobId = parentJobId,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };

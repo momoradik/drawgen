@@ -7,5 +7,32 @@
       "Bash(findstr /i \"IPv4\")",
       "Bash(ip addr:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "grep -q 'dotnet build' && /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command '$conn = Get-NetTCPConnection -LocalPort 5000 -State Listen -ErrorAction SilentlyContinue; if ($conn) { Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500 }' || true",
+            "statusMessage": "Stopping HybridSlicer API for rebuild..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "grep -q 'dotnet build' && /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command 'Start-Process dotnet -ArgumentList \"HybridSlicer.Api.dll\" -WorkingDirectory \"C:\\Users\\Sina\\HybridslicerV2Workspace\\src\\HybridSlicer.Api\\bin\\Debug\\net8.0\" -WindowStyle Hidden' || true",
+            "async": true,
+            "statusMessage": "Starting HybridSlicer API on localhost:5000..."
+          }
+        ]
+      }
+    ]
   }
 }

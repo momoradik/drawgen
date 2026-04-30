@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { machineProfilesApi } from '../api/client'
 import DisabledHint from '../components/DisabledHint'
 import MachineLayoutPreview from '../components/MachineLayoutPreview'
-import type { MachineProfile, ExtruderAssignment, OriginMode } from '../types'
+import type { MachineProfile, ExtruderAssignment, OriginMode, BedDef } from '../types'
 import { EXTRUDER_DUTIES } from '../types'
 
 // Highlight keys used to link input fields to diagram elements.
@@ -29,6 +29,7 @@ interface MachineForm {
   bedPositionYMm: number
   originXMm: number
   originYMm: number
+  beds: BedDef[]
   extruderCount: number
   nozzleXOffsets: number[]
   nozzleYOffsets: number[]
@@ -50,6 +51,24 @@ function parseJsonArray(json: string | undefined): number[] {
   catch { return [] }
 }
 
+function parseBeds(m: MachineProfile): BedDef[] {
+  try {
+    const raw = JSON.parse(m.bedsJson || '[]') as any[]
+    if (raw.length > 0) {
+      return raw.map((b: any, i: number) => ({
+        index: b.index ?? b.Index ?? i,
+        widthMm: b.widthMm ?? b.WidthMm ?? m.bedWidthMm,
+        depthMm: b.depthMm ?? b.DepthMm ?? m.bedDepthMm,
+        heightMm: b.heightMm ?? b.HeightMm ?? m.bedHeightMm,
+        positionXMm: b.positionXMm ?? b.PositionXMm ?? 0,
+        positionYMm: b.positionYMm ?? b.PositionYMm ?? 0,
+      }))
+    }
+  } catch { /* fall through */ }
+  return [{ index: 0, widthMm: m.bedWidthMm, depthMm: m.bedDepthMm, heightMm: m.bedHeightMm,
+    positionXMm: m.bedPositionXMm ?? 0, positionYMm: m.bedPositionYMm ?? 0 }]
+}
+
 function machineToForm(m: MachineProfile): MachineForm {
   return {
     name: m.name,
@@ -65,6 +84,7 @@ function machineToForm(m: MachineProfile): MachineForm {
     bedPositionYMm: m.bedPositionYMm ?? 0,
     originXMm: m.originXMm ?? 0,
     originYMm: m.originYMm ?? 0,
+    beds: parseBeds(m),
     extruderCount: m.extruderCount,
     nozzleXOffsets: parseJsonArray(m.nozzleXOffsetsJson),
     nozzleYOffsets: parseJsonArray(m.nozzleYOffsetsJson),
@@ -97,6 +117,7 @@ function emptyForm(): MachineForm {
     bedPositionYMm: 0,
     originXMm: 0,
     originYMm: 0,
+    beds: [{ index: 0, widthMm: 440, depthMm: 290, heightMm: 350, positionXMm: 0, positionYMm: 0 }],
     extruderCount: 1,
     nozzleXOffsets: [],
     nozzleYOffsets: [],
@@ -185,9 +206,14 @@ export default function MachineConfig() {
       name: form.name, type: form.type,
       travelXMm: form.travelXMm, travelYMm: form.travelYMm, travelZMm: form.travelZMm,
       originMode: form.originMode,
-      bedWidthMm: form.bedWidthMm, bedDepthMm: form.bedDepthMm, bedHeightMm: form.bedHeightMm,
-      bedPositionXMm: form.bedPositionXMm, bedPositionYMm: form.bedPositionYMm,
+      bedWidthMm: form.beds[0]?.widthMm ?? form.bedWidthMm,
+      bedDepthMm: form.beds[0]?.depthMm ?? form.bedDepthMm,
+      bedHeightMm: form.beds[0]?.heightMm ?? form.bedHeightMm,
+      bedPositionXMm: form.beds[0]?.positionXMm ?? form.bedPositionXMm,
+      bedPositionYMm: form.beds[0]?.positionYMm ?? form.bedPositionYMm,
       originXMm: form.originXMm, originYMm: form.originYMm,
+      beds: form.beds.map(b => ({ widthMm: b.widthMm, depthMm: b.depthMm, heightMm: b.heightMm,
+        positionXMm: b.positionXMm, positionYMm: b.positionYMm })),
       extruderCount: form.extruderCount,
       nozzleXOffsets: form.nozzleXOffsets, nozzleYOffsets: form.nozzleYOffsets,
       leftBedEdgeOffsetMm: form.leftBedEdgeOffsetMm, rightBedEdgeOffsetMm: form.rightBedEdgeOffsetMm,
@@ -286,32 +312,59 @@ export default function MachineConfig() {
               </div>
             </div>
 
-            {/* ── STEP 2: Bed ── */}
+            {/* ── STEP 2: Beds ── */}
             <div className="border-t border-gray-800 pt-3 space-y-3">
-              <h4 className="text-sm font-semibold text-white">2. Bed / Build Area</h4>
-              <p className="text-xs text-gray-500">Size of the printable bed, and where it sits inside the machine frame.</p>
-              <div {...hField('bed')} className="grid grid-cols-3 gap-3">
-                <MField label="Bed Width X (mm)">
-                  <NumInput value={form.bedWidthMm} min={1} max={2000} onChange={v => set('bedWidthMm', v)} />
-                </MField>
-                <MField label="Bed Depth Y (mm)">
-                  <NumInput value={form.bedDepthMm} min={1} max={2000} onChange={v => set('bedDepthMm', v)} />
-                </MField>
-                <MField label="Print Height Z (mm)">
-                  <NumInput value={form.bedHeightMm} min={1} max={2000} onChange={v => set('bedHeightMm', v)} />
-                </MField>
-              </div>
-              <p className="text-xs text-gray-500">Bed position inside machine (front-left corner of bed in machine coordinates).</p>
-              <div {...hField('bed')} className="grid grid-cols-2 gap-3">
-                <MField label="Bed Position X (mm)">
-                  <NumInput value={form.bedPositionXMm} min={0} max={5000} step={0.1}
-                    onChange={v => set('bedPositionXMm', v)} />
-                </MField>
-                <MField label="Bed Position Y (mm)">
-                  <NumInput value={form.bedPositionYMm} min={0} max={5000} step={0.1}
-                    onChange={v => set('bedPositionYMm', v)} />
-                </MField>
-              </div>
+              <h4 className="text-sm font-semibold text-white">2. Beds / Build Areas</h4>
+              <MField label="Number of Beds">
+                <NumInput value={form.beds.length} min={1} max={8} onChange={v => {
+                  const count = Math.max(1, Math.min(8, v))
+                  const beds = [...form.beds]
+                  while (beds.length < count) {
+                    const i = beds.length
+                    const prev = beds[0]
+                    beds.push({ index: i, widthMm: prev.widthMm, depthMm: prev.depthMm, heightMm: prev.heightMm,
+                      positionXMm: prev.positionXMm + (prev.widthMm + 20) * i, positionYMm: prev.positionYMm })
+                  }
+                  while (beds.length > count) beds.pop()
+                  set('beds', beds)
+                }} />
+              </MField>
+
+              {form.beds.map((bed, bi) => (
+                <div key={bi} className="bg-gray-800/30 rounded-lg p-3 space-y-2">
+                  <p className="text-xs font-semibold text-gray-300">Bed {bi + 1}</p>
+                  <div {...hField('bed')} className="grid grid-cols-3 gap-2">
+                    <MField label="Width X (mm)">
+                      <NumInput value={bed.widthMm} min={1} max={2000} onChange={v => {
+                        const beds = [...form.beds]; beds[bi] = { ...beds[bi], widthMm: v }; set('beds', beds)
+                      }} />
+                    </MField>
+                    <MField label="Depth Y (mm)">
+                      <NumInput value={bed.depthMm} min={1} max={2000} onChange={v => {
+                        const beds = [...form.beds]; beds[bi] = { ...beds[bi], depthMm: v }; set('beds', beds)
+                      }} />
+                    </MField>
+                    <MField label="Height Z (mm)">
+                      <NumInput value={bed.heightMm} min={1} max={2000} onChange={v => {
+                        const beds = [...form.beds]; beds[bi] = { ...beds[bi], heightMm: v }; set('beds', beds)
+                      }} />
+                    </MField>
+                  </div>
+                  <div {...hField('bed')} className="grid grid-cols-2 gap-2">
+                    <MField label="Position X (mm)">
+                      <NumInput value={bed.positionXMm} min={0} max={5000} step={0.1} onChange={v => {
+                        const beds = [...form.beds]; beds[bi] = { ...beds[bi], positionXMm: v }; set('beds', beds)
+                      }} />
+                    </MField>
+                    <MField label="Position Y (mm)">
+                      <NumInput value={bed.positionYMm} min={0} max={5000} step={0.1} onChange={v => {
+                        const beds = [...form.beds]; beds[bi] = { ...beds[bi], positionYMm: v }; set('beds', beds)
+                      }} />
+                    </MField>
+                  </div>
+                </div>
+              ))}
+
               <p className="text-xs text-gray-500 mt-2">Machine origin (0,0) position in the travel frame.</p>
               <div {...hField('origin')} className="grid grid-cols-2 gap-3">
                 <MField label="Origin X (mm)">
@@ -323,7 +376,7 @@ export default function MachineConfig() {
                     onChange={v => set('originYMm', v)} />
                 </MField>
               </div>
-              <p className="text-xs text-gray-600">Print reference is at bed center. The slicer uses bed-centre as (0,0) for G-code.</p>
+              <p className="text-xs text-gray-600">Print reference is at bed center. Slicer uses bed-centre as (0,0).</p>
             </div>
 
             {/* ── STEP 3: Extruders ── */}
@@ -338,10 +391,11 @@ export default function MachineConfig() {
                 travelX={form.travelXMm}
                 travelY={form.travelYMm}
                 originMode={form.originMode}
-                bedWidth={form.bedWidthMm}
-                bedDepth={form.bedDepthMm}
-                bedPositionX={form.bedPositionXMm}
-                bedPositionY={form.bedPositionYMm}
+                bedWidth={form.beds[0]?.widthMm ?? form.bedWidthMm}
+                bedDepth={form.beds[0]?.depthMm ?? form.bedDepthMm}
+                bedPositionX={form.beds[0]?.positionXMm ?? 0}
+                bedPositionY={form.beds[0]?.positionYMm ?? 0}
+                beds={form.beds}
                 extruderCount={form.extruderCount}
                 nozzleXOffsets={form.nozzleXOffsets}
                 nozzleYOffsets={form.nozzleYOffsets}
@@ -358,6 +412,12 @@ export default function MachineConfig() {
                 cncOffsetY={form.cncOffsetY}
                 onBedPositionChange={(x, y) => setForm(f => f ? { ...f, bedPositionXMm: x, bedPositionYMm: y } : f)}
                 onBedSizeChange={(w, d) => setForm(f => f ? { ...f, bedWidthMm: w, bedDepthMm: d } : f)}
+                onBedChange={(bi, x, y, w, d) => setForm(f => {
+                  if (!f) return f
+                  const beds = [...f.beds]
+                  if (bi < beds.length) beds[bi] = { ...beds[bi], positionXMm: x, positionYMm: y, widthMm: w, depthMm: d }
+                  return { ...f, beds }
+                })}
                 onNozzleOffsetChange={(idx, dx, dy) => setForm(f => {
                   if (!f) return f
                   const xo = [...f.nozzleXOffsets]; xo[idx] = dx
@@ -367,6 +427,7 @@ export default function MachineConfig() {
                 onExtruder1PositionChange={(front, left) => setForm(f =>
                   f ? { ...f, frontBedEdgeOffsetMm: front, leftBedEdgeOffsetMm: left } : f)}
                 onOriginChange={(x, y) => setForm(f => f ? { ...f, originXMm: x, originYMm: y } : f)}
+                onCncOffsetChange={(x, y) => setForm(f => f ? { ...f, cncOffsetX: x, cncOffsetY: y } : f)}
               />
 
               {/* Nozzle Spacing (only when > 1 extruder) */}

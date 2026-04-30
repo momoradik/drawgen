@@ -29,6 +29,8 @@ export interface MachineProfile {
   bedPositionYMm: number
   originXMm: number
   originYMm: number
+  bedCount: number
+  bedsJson: string
   extruderCount: number
   nozzleXOffsetsJson: string
   nozzleYOffsetsJson: string
@@ -42,6 +44,15 @@ export interface MachineProfile {
   cncOffset: MachineOffset
   safeClearanceHeightMm: number
   version: string
+}
+
+export interface BedDef {
+  index: number
+  widthMm: number
+  depthMm: number
+  heightMm: number
+  positionXMm: number
+  positionYMm: number
 }
 
 export interface ExtruderAssignment {

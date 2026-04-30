@@ -46,6 +46,13 @@ public sealed class AppDbContext : DbContext
                 o.ToJson();
             });
 
+            // Multi-bed definitions stored as JSON
+            e.Property(x => x.BedsJson)
+                .HasColumnName("Beds")
+                .HasColumnType("TEXT")
+                .HasDefaultValue("[]");
+            e.Ignore(x => x.Beds);
+
             // Nozzle X offsets stored as JSON string
             e.Property(x => x.NozzleXOffsetsJson)
                 .HasColumnName("NozzleXOffsets")

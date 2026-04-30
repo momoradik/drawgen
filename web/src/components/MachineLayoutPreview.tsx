@@ -1,5 +1,5 @@
 import { useRef, useCallback } from 'react'
-import type { ExtruderAssignment, OriginMode } from '../types'
+import type { ExtruderAssignment, OriginMode, BedDef } from '../types'
 
 const NOZZLE_COLORS = ['#3b82f6', '#f97316', '#a78bfa', '#10b981', '#f43f5e', '#eab308', '#06b6d4', '#ec4899']
 const DUTY_SHORT: Record<string, string> = { Walls: 'W', Infill: 'I', Support: 'S', All: '*' }
@@ -12,6 +12,7 @@ interface Props {
   bedDepth: number
   bedPositionX: number
   bedPositionY: number
+  beds?: BedDef[]
   originX: number
   originY: number
   extruderCount: number
@@ -32,21 +33,24 @@ interface Props {
   onNozzleOffsetChange?: (index: number, dx: number, dy: number) => void
   onExtruder1PositionChange?: (frontEdge: number, leftEdge: number) => void
   onOriginChange?: (x: number, y: number) => void
+  onCncOffsetChange?: (x: number, y: number) => void
+  onBedChange?: (bedIndex: number, x: number, y: number, w: number, d: number) => void
 }
 
 export default function MachineLayoutPreview({
   travelX, travelY, originMode: _om, bedWidth, bedDepth, bedPositionX, bedPositionY,
+  beds: bedsProp,
   originX, originY,
   extruderCount, nozzleXOffsets, nozzleYOffsets,
   leftEdge, rightEdge, frontEdge, backEdge: _be,
   extruderAssignments, isHybrid, cncOffsetX, cncOffsetY,
   highlight,
   onBedPositionChange, onBedSizeChange, onNozzleOffsetChange,
-  onExtruder1PositionChange, onOriginChange,
+  onExtruder1PositionChange, onOriginChange, onCncOffsetChange, onBedChange,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<{
-    type: 'bed' | 'bedRight' | 'bedBottom' | 'bedCorner' | 'origin' | `nozzle-${number}`
+    type: string // 'bed' | 'origin' | 'bed-N' | 'bedResizeR-N' | 'bedResizeB-N' | 'bedResizeC-N' | 'nozzle-N'
     startMmX: number; startMmY: number
     startSvgX: number; startSvgY: number
   } | null>(null)
@@ -64,16 +68,22 @@ export default function MachineLayoutPreview({
   const offX = mL + (mW - usedW) / 2
   const offY = mT + (mH - usedH) / 2
 
-  const bedSvgX = offX + bedPositionX * scale
-  const bedSvgY = offY + bedPositionY * scale
-  const bedSvgW = bedWidth * scale
-  const bedSvgH = bedDepth * scale
+  // All beds (use prop array or fall back to single bed from legacy fields)
+  const allBeds: BedDef[] = bedsProp && bedsProp.length > 0
+    ? bedsProp
+    : [{ index: 0, widthMm: bedWidth, depthMm: bedDepth, heightMm: 0, positionXMm: bedPositionX, positionYMm: bedPositionY }]
+
+  // Primary bed (bed 1) for extruder positioning and backward compat
+  const bedSvgX = offX + allBeds[0].positionXMm * scale
+  const bedSvgY = offY + allBeds[0].positionYMm * scale
+  const bedSvgW = allBeds[0].widthMm * scale
+  const bedSvgH = allBeds[0].depthMm * scale
 
   // Machine origin (explicit position in travel frame)
   const originSvgX = offX + originX * scale
   const originSvgY = offY + originY * scale
 
-  // Bed center (print reference)
+  // Bed center (print reference — bed 1)
   const bedCenterSvgX = bedSvgX + bedSvgW / 2
   const bedCenterSvgY = bedSvgY + bedSvgH / 2
 
@@ -110,7 +120,7 @@ export default function MachineLayoutPreview({
   // ── Drag handlers ───────────────────────────────────────────────────────
   const onPointerDown = useCallback((
     e: React.PointerEvent,
-    type: NonNullable<typeof dragRef.current>['type'],
+    type: string,
     startMmX: number, startMmY: number,
   ) => {
     e.preventDefault()
@@ -129,7 +139,37 @@ export default function MachineLayoutPreview({
     const dxSvg = p.x - d.startSvgX, dySvg = p.y - d.startSvgY
     const dxMm = dxSvg / scale, dyMm = dySvg / scale
 
-    if (d.type === 'bed' && onBedPositionChange) {
+    if (d.type.startsWith('bedResizeR-') && onBedChange) {
+      const bi = parseInt(d.type.split('-')[1])
+      const bed = allBeds[bi]
+      if (bed) {
+        const nw = Math.max(10, Math.min(travelX - bed.positionXMm, d.startMmX + dxMm))
+        onBedChange(bi, bed.positionXMm, bed.positionYMm, Math.round(nw * 10) / 10, bed.depthMm)
+      }
+    } else if (d.type.startsWith('bedResizeB-') && onBedChange) {
+      const bi = parseInt(d.type.split('-')[1])
+      const bed = allBeds[bi]
+      if (bed) {
+        const nd = Math.max(10, Math.min(travelY - bed.positionYMm, d.startMmY + dyMm))
+        onBedChange(bi, bed.positionXMm, bed.positionYMm, bed.widthMm, Math.round(nd * 10) / 10)
+      }
+    } else if (d.type.startsWith('bedResizeC-') && onBedChange) {
+      const bi = parseInt(d.type.split('-')[1])
+      const bed = allBeds[bi]
+      if (bed) {
+        const nw = Math.max(10, Math.min(travelX - bed.positionXMm, d.startMmX + dxMm))
+        const nd = Math.max(10, Math.min(travelY - bed.positionYMm, d.startMmY + dyMm))
+        onBedChange(bi, bed.positionXMm, bed.positionYMm, Math.round(nw * 10) / 10, Math.round(nd * 10) / 10)
+      }
+    } else if (d.type.startsWith('bed-') && onBedChange) {
+      const bi = parseInt(d.type.split('-')[1])
+      const bed = allBeds[bi]
+      if (bed) {
+        const nx = Math.max(0, Math.min(travelX - bed.widthMm, d.startMmX + dxMm))
+        const ny = Math.max(0, Math.min(travelY - bed.depthMm, d.startMmY + dyMm))
+        onBedChange(bi, Math.round(nx * 10) / 10, Math.round(ny * 10) / 10, bed.widthMm, bed.depthMm)
+      }
+    } else if (d.type === 'bed' && onBedPositionChange) {
       const nx = Math.max(0, Math.min(travelX - bedWidth, d.startMmX + dxMm))
       const ny = Math.max(0, Math.min(travelY - bedDepth, d.startMmY + dyMm))
       onBedPositionChange(Math.round(nx * 10) / 10, Math.round(ny * 10) / 10)
@@ -143,6 +183,10 @@ export default function MachineLayoutPreview({
       const nw = Math.max(10, Math.min(travelX - bedPositionX, d.startMmX + dxMm))
       const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY + dyMm))
       onBedSizeChange(Math.round(nw * 10) / 10, Math.round(nd * 10) / 10)
+    } else if (d.type === 'cnc' && onCncOffsetChange) {
+      const newY = d.startMmX + dxMm   // SVG horizontal = CNC Y offset
+      const newX = d.startMmY - dyMm   // SVG vertical inverted = CNC X offset
+      onCncOffsetChange(Math.round(newX * 10) / 10, Math.round(newY * 10) / 10)
     } else if (d.type === 'origin' && onOriginChange) {
       const nx = Math.max(0, Math.min(travelX, d.startMmX + dxMm))
       const ny = Math.max(0, Math.min(travelY, d.startMmY + dyMm))
@@ -207,39 +251,44 @@ export default function MachineLayoutPreview({
             fontFamily="ui-sans-serif,sans-serif">Machine: {travelX} × {travelY} mm</text>
         </g>
 
-        {/* ── Bed / build area (draggable) ── */}
-        <g opacity={opacity(['bed', 'travel'])}>
-          <rect x={bedSvgX} y={bedSvgY} width={bedSvgW} height={bedSvgH}
-            fill="#111827" stroke={hl === 'bed' ? '#d1d5db' : '#6b7280'}
-            strokeWidth={hl === 'bed' ? 2.5 : 1.5} rx="3"
-            style={{ cursor: onBedPositionChange ? 'move' : 'default' }}
-            onPointerDown={e => onPointerDown(e, 'bed', bedPositionX, bedPositionY)} />
-          <text x={bedSvgX + bedSvgW / 2} y={bedSvgY + bedSvgH + 13} textAnchor="middle"
-            fill={hl === 'bed' ? '#e5e7eb' : '#9ca3af'} fontSize="9"
-            fontFamily="ui-sans-serif,sans-serif">Bed: {bedWidth} × {bedDepth} mm @ ({bedPositionX}, {bedPositionY})</text>
-        </g>
-
-        {/* ── Bed resize handles ── */}
-        {onBedSizeChange && <>
-          {/* Right edge handle */}
-          <rect x={bedSvgX + bedSvgW - HANDLE/2} y={bedSvgY + bedSvgH/2 - HANDLE}
-            width={HANDLE} height={HANDLE*2} rx="1"
-            fill="#6b7280" fillOpacity="0.6" stroke="#9ca3af" strokeWidth="0.5"
-            style={{ cursor: 'ew-resize' }}
-            onPointerDown={e => onPointerDown(e, 'bedRight', bedWidth, 0)} />
-          {/* Bottom edge handle */}
-          <rect x={bedSvgX + bedSvgW/2 - HANDLE} y={bedSvgY + bedSvgH - HANDLE/2}
-            width={HANDLE*2} height={HANDLE} rx="1"
-            fill="#6b7280" fillOpacity="0.6" stroke="#9ca3af" strokeWidth="0.5"
-            style={{ cursor: 'ns-resize' }}
-            onPointerDown={e => onPointerDown(e, 'bedBottom', 0, bedDepth)} />
-          {/* Corner handle */}
-          <rect x={bedSvgX + bedSvgW - HANDLE} y={bedSvgY + bedSvgH - HANDLE}
-            width={HANDLE} height={HANDLE} rx="1"
-            fill="#9ca3af" fillOpacity="0.6" stroke="#d1d5db" strokeWidth="0.5"
-            style={{ cursor: 'nwse-resize' }}
-            onPointerDown={e => onPointerDown(e, 'bedCorner', bedWidth, bedDepth)} />
-        </>}
+        {/* ── Beds / build areas ── */}
+        {allBeds.map((bed, bi) => {
+          const bx = offX + bed.positionXMm * scale
+          const by = offY + bed.positionYMm * scale
+          const bw = bed.widthMm * scale
+          const bh = bed.depthMm * scale
+          const isPrimary = bi === 0
+          const bedColor = isPrimary ? '#6b7280' : '#4b5563'
+          return (
+            <g key={bi} opacity={opacity(['bed', 'travel'])}>
+              <rect x={bx} y={by} width={bw} height={bh}
+                fill="#111827" stroke={hl === 'bed' ? '#d1d5db' : bedColor}
+                strokeWidth={hl === 'bed' ? 2.5 : 1.5} rx="3"
+                style={{ cursor: onBedChange ? 'move' : 'default' }}
+                onPointerDown={e => onPointerDown(e, `bed-${bi}`, bed.positionXMm, bed.positionYMm)} />
+              {/* Per-bed resize handles */}
+              {onBedChange && <>
+                <rect x={bx + bw - HANDLE/2} y={by + bh/2 - HANDLE} width={HANDLE} height={HANDLE*2} rx="1"
+                  fill="#6b7280" fillOpacity="0.6" stroke="#9ca3af" strokeWidth="0.5"
+                  style={{ cursor: 'ew-resize' }}
+                  onPointerDown={e => onPointerDown(e, `bedResizeR-${bi}` as any, bed.widthMm, 0)} />
+                <rect x={bx + bw/2 - HANDLE} y={by + bh - HANDLE/2} width={HANDLE*2} height={HANDLE} rx="1"
+                  fill="#6b7280" fillOpacity="0.6" stroke="#9ca3af" strokeWidth="0.5"
+                  style={{ cursor: 'ns-resize' }}
+                  onPointerDown={e => onPointerDown(e, `bedResizeB-${bi}` as any, 0, bed.depthMm)} />
+                <rect x={bx + bw - HANDLE} y={by + bh - HANDLE} width={HANDLE} height={HANDLE} rx="1"
+                  fill="#9ca3af" fillOpacity="0.6" stroke="#d1d5db" strokeWidth="0.5"
+                  style={{ cursor: 'nwse-resize' }}
+                  onPointerDown={e => onPointerDown(e, `bedResizeC-${bi}` as any, bed.widthMm, bed.depthMm)} />
+              </>}
+              <text x={bx + bw / 2} y={by + bh + 12} textAnchor="middle"
+                fill={hl === 'bed' ? '#e5e7eb' : '#9ca3af'} fontSize="8"
+                fontFamily="ui-sans-serif,sans-serif">
+                Bed {bi + 1}: {bed.widthMm}×{bed.depthMm}
+              </text>
+            </g>
+          )
+        })}
 
         {/* ── Machine origin (draggable) ── */}
         <g opacity={opacity('origin')} style={{ cursor: onOriginChange ? 'move' : 'default' }}
@@ -334,6 +383,8 @@ export default function MachineLayoutPreview({
               if (i === 0) onPointerDown(e, 'nozzle-0', leftEdge, frontEdge)
               else onPointerDown(e, `nozzle-${i}`, nozzleYOffsets[i-1] ?? 0, nozzleXOffsets[i-1] ?? 0)
             } : undefined}>
+            {/* Invisible larger hit area for easier grabbing */}
+            {canDrag && <circle cx={pos.x} cy={pos.y} r="14" fill="transparent" />}
             <circle cx={pos.x} cy={pos.y} r={canDrag ? 10 : 7}
               fill={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} fillOpacity="0.15"
               stroke={NOZZLE_COLORS[i % NOZZLE_COLORS.length]} strokeWidth="1.5" />
@@ -357,11 +408,15 @@ export default function MachineLayoutPreview({
           const cncSvgX = e1.x + cncX * (bedSvgW / (bedWidth || 1))
           const cncSvgY = e1.y - cncXmm * (bedSvgH / (bedDepth || 1))
           return (
-            <g>
+            <g style={{ cursor: onCncOffsetChange ? 'grab' : 'default' }}
+              onPointerDown={onCncOffsetChange
+                ? e => onPointerDown(e, 'cnc', cncOffsetY ?? 0, cncOffsetX ?? 0)
+                : undefined}>
               {/* Dashed line from E1 to CNC */}
               <line x1={e1.x} y1={e1.y} x2={cncSvgX} y2={cncSvgY}
                 stroke="#d946ef" strokeWidth="1" strokeDasharray="4,3" opacity="0.5" />
-              {/* CNC spindle marker — diamond shape */}
+              {/* CNC spindle marker — diamond shape (larger hit area for dragging) */}
+              <circle cx={cncSvgX} cy={cncSvgY} r="12" fill="transparent" />
               <rect x={cncSvgX - 7} y={cncSvgY - 7} width={14} height={14} rx="2"
                 fill="#d946ef" fillOpacity="0.15" stroke="#d946ef" strokeWidth="1.5"
                 transform={`rotate(45,${cncSvgX},${cncSvgY})`} />

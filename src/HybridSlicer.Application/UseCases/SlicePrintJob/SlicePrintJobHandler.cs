@@ -50,6 +50,22 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
         var machine = await _machines.GetByIdAsync(job.MachineProfileId, ct)
             ?? throw new DomainException("MACHINE_NOT_FOUND", $"Machine profile {job.MachineProfileId} not found.");
 
+        // Resolve bed dimensions: use per-bed size if this is a multi-bed job
+        double sliceBedWidth = machine.BedWidthMm, sliceBedDepth = machine.BedDepthMm, sliceBedHeight = machine.BedHeightMm;
+        if (job.BedIndex.HasValue)
+        {
+            var beds = machine.Beds;
+            var bi = job.BedIndex.Value;
+            if (bi >= 0 && bi < beds.Count)
+            {
+                sliceBedWidth = beds[bi].WidthMm;
+                sliceBedDepth = beds[bi].DepthMm;
+                sliceBedHeight = beds[bi].HeightMm;
+                _logger.LogInformation("Multi-bed job: using Bed {Bed} ({W}×{D}×{H} mm)",
+                    bi + 1, sliceBedWidth, sliceBedDepth, sliceBedHeight);
+            }
+        }
+
         job.MarkSlicing();
         await _jobs.UpdateAsync(job, ct);
 
@@ -84,9 +100,9 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
                 FilamentDiameterMm:    profile.PelletModeEnabled
                                            ? profile.VirtualFilamentDiameterMm
                                            : profile.FilamentDiameterMm,
-                BedWidthMm:            machine.BedWidthMm,
-                BedDepthMm:            machine.BedDepthMm,
-                BedHeightMm:           machine.BedHeightMm,
+                BedWidthMm:            sliceBedWidth,
+                BedDepthMm:            sliceBedDepth,
+                BedHeightMm:           sliceBedHeight,
                 NozzleDiameterMm:      profile.NozzleDiameterMm > 0 ? profile.NozzleDiameterMm : 0.4,
                 // Internal pipeline always uses bed-centre origin for STL viewer / preview consistency.
                 // OriginMode in the machine profile is for documentation and future firmware output.

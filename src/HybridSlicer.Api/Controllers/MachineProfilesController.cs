@@ -45,6 +45,10 @@ public sealed class MachineProfilesController : ControllerBase
         if (req.OriginXMm.HasValue || req.OriginYMm.HasValue)
             profile.SetOrigin(req.OriginXMm ?? 0, req.OriginYMm ?? 0);
 
+        if (req.Beds is { Count: > 0 })
+            profile.SetBeds(req.Beds.Select((b, i) =>
+                new BedDefinition(i, b.WidthMm, b.DepthMm, b.HeightMm, b.PositionXMm, b.PositionYMm)).ToList());
+
         if (req.IpAddress is not null)
             profile.SetNetworkEndpoint(req.IpAddress, req.Port);
 
@@ -96,6 +100,10 @@ public sealed class MachineProfilesController : ControllerBase
                 req.BedWidthMm ?? profile.BedWidthMm,
                 req.BedDepthMm ?? profile.BedDepthMm,
                 req.BedHeightMm ?? profile.BedHeightMm);
+
+        if (req.Beds is { Count: > 0 })
+            profile.SetBeds(req.Beds.Select((b, i) =>
+                new BedDefinition(i, b.WidthMm, b.DepthMm, b.HeightMm, b.PositionXMm, b.PositionYMm)).ToList());
 
         if (req.ExtruderCount.HasValue)
             profile.SetExtruderCount(req.ExtruderCount.Value);
@@ -178,6 +186,7 @@ public record CreateMachineProfileRequest(
     double? BedPositionYMm = null,
     double? OriginXMm = null,
     double? OriginYMm = null,
+    IReadOnlyList<BedDto>? Beds = null,
     IReadOnlyList<double>? NozzleXOffsets = null,
     IReadOnlyList<double>? NozzleYOffsets = null,
     double LeftBedEdgeOffsetMm = 0,
@@ -202,6 +211,7 @@ public record UpdateMachineProfileRequest(
     double? BedPositionYMm = null,
     double? OriginXMm = null,
     double? OriginYMm = null,
+    IReadOnlyList<BedDto>? Beds = null,
     IReadOnlyList<double>? NozzleXOffsets = null,
     IReadOnlyList<double>? NozzleYOffsets = null,
     double? LeftBedEdgeOffsetMm = null,
@@ -222,3 +232,4 @@ public record OffsetDto(double X, double Y, double Z, double RotationDeg = 0);
 public record ToolOffsetDto(int ToolIndex, double LengthOffsetMm, double RadiusOffsetMm,
     double OffsetX = 0, double OffsetY = 0, double OffsetZ = 0, string? Description = null);
 public record ExtruderAssignmentDto(int ExtruderIndex, string Duty);
+public record BedDto(double WidthMm, double DepthMm, double HeightMm, double PositionXMm, double PositionYMm);

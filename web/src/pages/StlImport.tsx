@@ -81,6 +81,7 @@ interface ModelState extends ModelEntry {
   file: File
   size: { x: number; y: number; z: number } | null
   isOutOfBounds: boolean
+  bedIndex: number  // which bed this model is assigned to (0-based)
 }
 
 // ── Module-level persistence (survives React navigation) ──────────────────────
@@ -159,15 +160,21 @@ export default function StlImport() {
   const [supportInfillDensity, setSupportInfillDensity] = useState<number>(() => _saved.supportInfillDensity)
 
   const [buildVolume, setBuildVolume]     = useState<BuildVolume>({ width: 220, depth: 220, height: 250 })
+  const [activeBedIndex, setActiveBedIndex] = useState(0)
+  const [bedLayerStep, setBedLayerStep] = useState(1)
+  const [isMergingBeds, setIsMergingBeds] = useState(false)
+  const [_perBedJobIds, setPerBedJobIds] = useState<Record<number, string>>({})
 
   // (Profile creation/editing is handled on the dedicated pages:
   //  Machine Config, Print Settings, Materials)
 
-  // G-code preview state
-  const [previewGCode, setPreviewGCode]         = useState<string | null>(null)
+  // G-code preview state — per-bed for multi-bed machines
+  const [bedPreviews, setBedPreviews]           = useState<Record<number, string>>({})
   const [isPreviewLoading, setIsPreviewLoading] = useState(false)
   const [previewError, setPreviewError]         = useState<string | null>(null)
-  const previewFingerprintRef  = useRef<string>('')
+  const bedFingerprintsRef = useRef<Record<number, string>>({})
+  // Convenience: current bed's preview
+  const previewGCode = bedPreviews[activeBedIndex] ?? null
 
   // Start Print state
   const [isPrinting, setIsPrinting]       = useState(false)
@@ -226,12 +233,32 @@ export default function StlImport() {
   useEffect(() => { _saved.supportInfillPattern = supportInfillPattern }, [supportInfillPattern])
   useEffect(() => { _saved.supportInfillDensity = supportInfillDensity }, [supportInfillDensity])
 
-  // Sync build volume from machine profile
+  // Parse beds from the selected machine (handles both PascalCase and camelCase JSON)
+  const selectedMachineBeds = (() => {
+    const m = machines.find(m => m.id === machineId)
+    if (!m) return [{ index: 0, widthMm: 220, depthMm: 220, heightMm: 250, positionXMm: 0, positionYMm: 0 }]
+    try {
+      const raw = JSON.parse(m.bedsJson || '[]') as any[]
+      if (raw.length > 0) {
+        return raw.map((b: any, i: number) => ({
+          index: b.index ?? b.Index ?? i,
+          widthMm: b.widthMm ?? b.WidthMm ?? m.bedWidthMm,
+          depthMm: b.depthMm ?? b.DepthMm ?? m.bedDepthMm,
+          heightMm: b.heightMm ?? b.HeightMm ?? m.bedHeightMm,
+          positionXMm: b.positionXMm ?? b.PositionXMm ?? 0,
+          positionYMm: b.positionYMm ?? b.PositionYMm ?? 0,
+        }))
+      }
+    } catch { /* fall through */ }
+    return [{ index: 0, widthMm: m.bedWidthMm, depthMm: m.bedDepthMm, heightMm: m.bedHeightMm, positionXMm: 0, positionYMm: 0 }]
+  })()
+
+  // Sync build volume from active bed
   useEffect(() => {
     if (!machineId) return
-    const m = machines.find(m => m.id === machineId)
-    if (m) setBuildVolume({ width: m.bedWidthMm, depth: m.bedDepthMm, height: m.bedHeightMm })
-  }, [machineId, machines])
+    const bed = selectedMachineBeds[activeBedIndex] ?? selectedMachineBeds[0]
+    if (bed) setBuildVolume({ width: bed.widthMm, depth: bed.depthMm, height: bed.heightMm })
+  }, [machineId, machines, activeBedIndex]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear face-selected badge when selection changes
   useEffect(() => { setHasFaceSelected(false) }, [selectedId])
@@ -276,6 +303,7 @@ export default function StlImport() {
       transform: { ...DEFAULT_TRANSFORM },
       size: null,
       isOutOfBounds: false,
+      bedIndex: activeBedIndex,
     }
     setModels(prev => {
       if (prev.length === 0) setJobName(entry.name)
@@ -357,27 +385,73 @@ export default function StlImport() {
   // ── Submit (Generate G-code) ───────────────────────────────────────────────
 
   const handleSubmit = async () => {
-    const primary = selectedModel ?? models[0]
-    if (!primary || !machineId || !profileId || !materialId || !jobName) return
-    const fd = new FormData()
-    const transformedFile = await buildTransformedStlBlob(primary.file, primary.transform)
-    fd.append('file', transformedFile, primary.file.name)
-    fd.append('jobName', jobName)
-    fd.append('machineProfileId', machineId)
-    fd.append('printProfileId', profileId)
-    fd.append('materialId', materialId)
-    fd.append('supportEnabled', supportEnabled.toString())
-    fd.append('supportType', supportType)
-    fd.append('supportPlacement', supportPlacement)
-    fd.append('infillPattern', infillPattern)
-    fd.append('infillDensityPct', infillDensity.toString())
-    fd.append('supportInfillPattern', supportInfillPattern)
-    fd.append('supportInfillDensityPct', supportInfillDensity.toString())
-    const { jobId } = await uploadMutation.mutateAsync(fd)
-    await sliceMutation.mutateAsync(jobId)
-    qc.invalidateQueries({ queryKey: ['jobs'] })
-    setGeneratedJobId(jobId)
-    setActiveTab('preview')
+    if (!machineId || !profileId || !materialId || !jobName) return
+
+    if (selectedMachineBeds.length > 1) {
+      // Multi-bed: slice each bed separately, then merge
+      setIsMergingBeds(true)
+      try {
+        const jobIds: string[] = []
+        for (let bi = 0; bi < selectedMachineBeds.length; bi++) {
+          const bedModels = models.filter(m => (m.bedIndex ?? 0) === bi)
+          if (bedModels.length === 0) continue
+          const primary = bedModels[0]
+          const fd = new FormData()
+          const transformedFile = await buildTransformedStlBlob(primary.file, primary.transform)
+          fd.append('file', transformedFile, primary.file.name)
+          fd.append('jobName', `${jobName}_bed${bi + 1}`)
+          fd.append('machineProfileId', machineId)
+          fd.append('printProfileId', profileId)
+          fd.append('materialId', materialId)
+          fd.append('supportEnabled', supportEnabled.toString())
+          fd.append('supportType', supportType)
+          fd.append('supportPlacement', supportPlacement)
+          fd.append('infillPattern', infillPattern)
+          fd.append('infillDensityPct', infillDensity.toString())
+          fd.append('supportInfillPattern', supportInfillPattern)
+          fd.append('supportInfillDensityPct', supportInfillDensity.toString())
+          fd.append('bedIndex', bi.toString())
+          const { jobId } = await jobsApi.uploadStl(fd)
+          await jobsApi.slice(jobId)
+          jobIds.push(jobId)
+          setPerBedJobIds(prev => ({ ...prev, [bi]: jobId }))
+        }
+        if (jobIds.length >= 2) {
+          const mergeResult = await jobsApi.mergeBeds(jobIds, bedLayerStep, jobName)
+          qc.invalidateQueries({ queryKey: ['jobs'] })
+          setGeneratedJobId(mergeResult.jobId)
+        } else {
+          qc.invalidateQueries({ queryKey: ['jobs'] })
+          if (jobIds.length > 0) setGeneratedJobId(jobIds[0])
+        }
+        setActiveTab('preview')
+      } finally {
+        setIsMergingBeds(false)
+      }
+    } else {
+      // Single bed: existing flow
+      const primary = selectedModel ?? models[0]
+      if (!primary) return
+      const fd = new FormData()
+      const transformedFile = await buildTransformedStlBlob(primary.file, primary.transform)
+      fd.append('file', transformedFile, primary.file.name)
+      fd.append('jobName', jobName)
+      fd.append('machineProfileId', machineId)
+      fd.append('printProfileId', profileId)
+      fd.append('materialId', materialId)
+      fd.append('supportEnabled', supportEnabled.toString())
+      fd.append('supportType', supportType)
+      fd.append('supportPlacement', supportPlacement)
+      fd.append('infillPattern', infillPattern)
+      fd.append('infillDensityPct', infillDensity.toString())
+      fd.append('supportInfillPattern', supportInfillPattern)
+      fd.append('supportInfillDensityPct', supportInfillDensity.toString())
+      const { jobId } = await uploadMutation.mutateAsync(fd)
+      await sliceMutation.mutateAsync(jobId)
+      qc.invalidateQueries({ queryKey: ['jobs'] })
+      setGeneratedJobId(jobId)
+      setActiveTab('preview')
+    }
   }
 
   // ── Start Print ────────────────────────────────────────────────────────────
@@ -402,12 +476,13 @@ export default function StlImport() {
   // ── Preview (slice → fetch G-code → render in viewer) ─────────────────────
 
   const handlePreview = async () => {
-    const primary = selectedModel ?? models[0]
+    const bedModels = models.filter(m => (m.bedIndex ?? 0) === activeBedIndex)
+    const primary = bedModels.find(m => m.id === selectedId) ?? bedModels[0]
     if (!primary || !machineId || !profileId || !materialId) return
     setIsPreviewLoading(true)
     setPreviewError(null)
-    setPreviewGCode(null)
-    const fp = currentFingerprint
+    setBedPreviews(prev => { const n = { ...prev }; delete n[activeBedIndex]; return n })
+    const fp = bedFingerprint(activeBedIndex)
     let previewJobId: string | null = null
     try {
       const fd = new FormData()
@@ -424,12 +499,14 @@ export default function StlImport() {
       fd.append('infillDensityPct', infillDensity.toString())
       fd.append('supportInfillPattern', supportInfillPattern)
       fd.append('supportInfillDensityPct', supportInfillDensity.toString())
+      if (primary.bedIndex != null && selectedMachineBeds.length > 1)
+        fd.append('bedIndex', primary.bedIndex.toString())
       const { jobId } = await jobsApi.uploadStl(fd)
       previewJobId = jobId
       await jobsApi.slice(jobId)
       const gcode = await jobsApi.getPrintGCode(jobId)
-      previewFingerprintRef.current = fp
-      setPreviewGCode(gcode)
+      bedFingerprintsRef.current[activeBedIndex] = fp
+      setBedPreviews(prev => ({ ...prev, [activeBedIndex]: gcode }))
       setActiveTab('preview')
     } catch (err) {
       const msg = (err as any)?.response?.data?.detail
@@ -443,31 +520,33 @@ export default function StlImport() {
   }
 
   const canSubmit  = models.length > 0 && !!machineId && !!profileId && !!materialId && !!jobName
-    && !uploadMutation.isPending && !sliceMutation.isPending
+    && !uploadMutation.isPending && !sliceMutation.isPending && !isMergingBeds
   const canPreview = models.length > 0 && !!machineId && !!profileId && !!materialId
     && !isPreviewLoading && !uploadMutation.isPending && !sliceMutation.isPending
   const anyOOB     = models.some(m => m.isOutOfBounds)
 
   const effectiveSize = selectedModel?.size ?? null
 
-  // Fingerprint of all slicing-relevant inputs — used to auto-clear stale preview
-  const currentFingerprint = useMemo(() => {
-    const primary = selectedModel ?? models[0]
-    if (!primary || !machineId || !profileId) return ''
+  // Per-bed fingerprint — only the models on that bed + global settings
+  const bedFingerprint = (bi: number) => {
+    const bedModels = models.filter(m => (m.bedIndex ?? 0) === bi)
+    if (bedModels.length === 0 || !machineId || !profileId) return ''
     return JSON.stringify({
-      id: primary.id, t: primary.transform,
-      machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern, infillDensity,
-      supportInfillPattern, supportInfillDensity,
+      models: bedModels.map(m => ({ id: m.id, t: m.transform })),
+      machineId, profileId, materialId, supportEnabled, supportType, supportPlacement,
+      infillPattern, infillDensity, supportInfillPattern, supportInfillDensity, bi,
     })
-  }, [selectedModel, models, machineId, profileId, materialId, supportEnabled, supportType, supportPlacement, infillPattern, infillDensity, supportInfillPattern, supportInfillDensity])
+  }
+  const currentFingerprint = bedFingerprint(activeBedIndex)
 
-  // Clear preview whenever slicing inputs change from what was last previewed
+  // Clear only the active bed's preview when its inputs change
   useEffect(() => {
-    if (currentFingerprint !== previewFingerprintRef.current) {
-      setPreviewGCode(null)
+    const fp = bedFingerprint(activeBedIndex)
+    if (fp !== bedFingerprintsRef.current[activeBedIndex]) {
+      setBedPreviews(prev => { const n = { ...prev }; delete n[activeBedIndex]; return n })
       setPreviewError(null)
     }
-  }, [currentFingerprint]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentFingerprint, activeBedIndex]) // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -476,10 +555,10 @@ export default function StlImport() {
     <div className="flex flex-col gap-0 h-[calc(100vh-8rem)]">
       <div className="flex border-b border-gray-800 mb-4 flex-shrink-0">
         <TabBtn active={activeTab === 'import'} onClick={() => setActiveTab('import')}>Import STL</TabBtn>
-        <DisabledHint when={!previewGCode && !generatedJobId} reason="Slice or generate G-code first to see a preview.">
+        <DisabledHint when={Object.keys(bedPreviews).length === 0 && !generatedJobId} reason="Slice or generate G-code first to see a preview.">
           <TabBtn
             active={activeTab === 'preview'}
-            disabled={!previewGCode && !generatedJobId}
+            disabled={Object.keys(bedPreviews).length === 0 && !generatedJobId}
             onClick={() => setActiveTab('preview')}
           >
             G-code Preview
@@ -487,8 +566,25 @@ export default function StlImport() {
         </DisabledHint>
       </div>
 
-      {activeTab === 'preview' && (previewGCode || generatedJobId) ? (
+      {activeTab === 'preview' && (Object.keys(bedPreviews).length > 0 || generatedJobId) ? (
         <div className="flex flex-col gap-3 flex-1 min-h-0">
+          {/* Bed preview tabs for multi-bed */}
+          {selectedMachineBeds.length > 1 && (
+            <div className="flex gap-1 flex-shrink-0">
+              {selectedMachineBeds.map((_: any, bi: number) => (
+                <button key={bi} onClick={() => setActiveBedIndex(bi)}
+                  className={`px-3 py-1 text-xs rounded-lg border transition ${
+                    bi === activeBedIndex
+                      ? 'bg-indigo-800 border-indigo-500 text-white'
+                      : bedPreviews[bi]
+                        ? 'bg-gray-800 border-gray-600 text-gray-300'
+                        : 'bg-gray-900 border-gray-800 text-gray-600'
+                  }`}>
+                  Bed {bi + 1} {bedPreviews[bi] ? '✓' : ''}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex items-center gap-3 flex-shrink-0">
             {generatedJobId ? (
               <>
@@ -540,6 +636,29 @@ export default function StlImport() {
       {/* ── Left: STL Viewer + G-code Preview ──────────────────────────── */}
       <div className="flex flex-col gap-3 min-h-0">
 
+      {/* Bed selector above viewer for multi-bed */}
+      {selectedMachineBeds.length > 1 && (
+        <div className="flex gap-1 flex-shrink-0">
+          {selectedMachineBeds.map((_: any, bi: number) => {
+            const bedModels = models.filter(m => (m.bedIndex ?? 0) === bi)
+            return (
+              <button key={bi} onClick={() => setActiveBedIndex(bi)}
+                className={`flex-1 px-2 py-1.5 text-xs rounded-lg border transition ${
+                  bi === activeBedIndex
+                    ? 'bg-indigo-800 border-indigo-500 text-white'
+                    : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'
+                }`}>
+                Bed {bi + 1}
+                <span className="ml-1 text-gray-500">
+                  {(selectedMachineBeds[bi] as any)?.widthMm ?? '?'}×{(selectedMachineBeds[bi] as any)?.depthMm ?? '?'}
+                </span>
+                <span className="ml-1 text-gray-600">({bedModels.length})</span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+
       {/* STL 3D viewer */}
       <div
         className={`bg-gray-900 rounded-xl overflow-hidden relative border-2 transition-colors flex-1 min-h-0
@@ -566,6 +685,12 @@ export default function StlImport() {
 
             {/* Overlay badges */}
             <div className="absolute top-3 left-3 flex flex-col gap-2 pointer-events-none select-none">
+              {/* Active bed indicator for multi-bed */}
+              {selectedMachineBeds.length > 1 && (
+                <div className="bg-indigo-900/85 text-indigo-200 text-xs px-3 py-1.5 rounded-lg backdrop-blur-sm">
+                  Bed {activeBedIndex + 1} — {buildVolume.width}×{buildVolume.depth}×{buildVolume.height} mm
+                </div>
+              )}
               {anyOOB && (
                 <div className="bg-red-900/85 text-red-200 text-xs px-3 py-1.5 rounded-lg backdrop-blur-sm">
                   Model outside build volume
@@ -881,6 +1006,28 @@ export default function StlImport() {
           </Field>
         </section>
 
+        {/* Multi-bed sequencing (only for multi-bed machines) */}
+        {selectedMachineBeds.length > 1 && (
+          <>
+            <Divider />
+            <section className="space-y-2">
+              <SectionHeader>Multi-Bed Sequencing</SectionHeader>
+              <Field label="Layer step (layers per bed before switching)">
+                <div className="flex items-center gap-2">
+                  <input type="range" min={1} max={50} step={1} value={bedLayerStep}
+                    onChange={e => setBedLayerStep(+e.target.value)} className="flex-1 accent-primary" />
+                  <input type="number" min={1} max={100} value={bedLayerStep}
+                    onChange={e => { const v = Math.max(1, +e.target.value); setBedLayerStep(isNaN(v) ? 1 : v) }}
+                    className="input w-16 text-center" />
+                </div>
+                <p className="text-xs text-gray-600 mt-1">
+                  Print {bedLayerStep} layer{bedLayerStep !== 1 ? 's' : ''} on each bed before switching to the next.
+                </p>
+              </Field>
+            </section>
+          </>
+        )}
+
         <Divider />
 
         {/* Build Volume */}
@@ -909,11 +1056,34 @@ export default function StlImport() {
           <>
             <Divider />
 
+            {/* Bed tabs (multi-bed) */}
+            {selectedMachineBeds.length > 1 && (
+              <div className="flex gap-1 flex-wrap">
+                {selectedMachineBeds.map((_: any, bi: number) => (
+                  <button key={bi} onClick={() => setActiveBedIndex(bi)}
+                    className={`px-3 py-1 text-xs rounded-lg border transition ${
+                      bi === activeBedIndex
+                        ? 'bg-indigo-800 border-indigo-500 text-white'
+                        : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-200'
+                    }`}>
+                    Bed {bi + 1}
+                    <span className="ml-1 text-gray-500">
+                      ({models.filter(m => (m.bedIndex ?? 0) === bi).length})
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Model List */}
             <section className="space-y-2">
               <div className="flex items-center justify-between">
-                <SectionHeader>Models ({models.length})</SectionHeader>
-                {models.length > 1 && (
+                <SectionHeader>
+                  {selectedMachineBeds.length > 1
+                    ? `Bed ${activeBedIndex + 1} — Models (${models.filter(m => (m.bedIndex ?? 0) === activeBedIndex).length})`
+                    : `Models (${models.length})`}
+                </SectionHeader>
+                {models.filter(m => (m.bedIndex ?? 0) === activeBedIndex).length > 1 && (
                   <button
                     onClick={() => viewerRef.current?.autoArrange()}
                     className="text-xs px-3 py-1 rounded-lg bg-indigo-700/60 hover:bg-indigo-700 text-indigo-200 border border-indigo-600 transition"
@@ -924,7 +1094,7 @@ export default function StlImport() {
               </div>
 
               <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
-                {models.map(m => (
+                {models.filter(m => (m.bedIndex ?? 0) === activeBedIndex).map(m => (
                   <div
                     key={m.id}
                     onClick={() => setSelectedId(m.id)}
@@ -939,6 +1109,23 @@ export default function StlImport() {
                       <span className="text-gray-500 flex-shrink-0">
                         {m.size.x.toFixed(0)}×{m.size.y.toFixed(0)}×{m.size.z.toFixed(0)}
                       </span>
+                    )}
+                    {/* Bed reassignment (multi-bed only) */}
+                    {selectedMachineBeds.length > 1 && (
+                      <select
+                        value={m.bedIndex}
+                        onClick={e => e.stopPropagation()}
+                        onChange={e => {
+                          const newBed = +e.target.value
+                          setModels(prev => prev.map(p => p.id === m.id ? { ...p, bedIndex: newBed } : p))
+                        }}
+                        className="bg-gray-700 text-gray-300 text-[10px] rounded px-1 py-0.5 border border-gray-600"
+                        title="Assign to bed"
+                      >
+                        {selectedMachineBeds.map((_: any, bi: number) => (
+                          <option key={bi} value={bi}>B{bi + 1}</option>
+                        ))}
+                      </select>
                     )}
                     <button
                       onClick={e => { e.stopPropagation(); removeModel(m.id) }}
@@ -1116,7 +1303,7 @@ export default function StlImport() {
               className="flex-1 py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 disabled:cursor-not-allowed
                          text-white rounded-lg font-medium transition-colors"
             >
-              {uploadMutation.isPending ? 'Uploading…' : sliceMutation.isPending ? 'Generating…' : 'Generate G-code'}
+              {isMergingBeds ? 'Slicing beds…' : uploadMutation.isPending ? 'Uploading…' : sliceMutation.isPending ? 'Generating…' : 'Generate G-code'}
             </button>
           </DisabledHint>
         </div>

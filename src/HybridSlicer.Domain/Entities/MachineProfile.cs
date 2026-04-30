@@ -32,6 +32,15 @@ public class MachineProfile
     public double OriginXMm { get; private set; }
     public double OriginYMm { get; private set; }
 
+    // Multi-bed support: number of beds and per-bed definitions.
+    // Bed 1 is always backed by the legacy single-bed fields for backward compat.
+    // Additional beds are stored in BedsJson.
+    public int BedCount { get; private set; } = 1;
+    public string BedsJson { get; private set; } = "[]";
+    public IReadOnlyList<ValueObjects.BedDefinition> Beds =>
+        System.Text.Json.JsonSerializer.Deserialize<List<ValueObjects.BedDefinition>>(BedsJson ?? "[]",
+            new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+
     // FDM properties
     public int ExtruderCount { get; private set; }
 
@@ -243,6 +252,47 @@ public class MachineProfile
     {
         OriginXMm = x;
         OriginYMm = y;
+        Touch();
+    }
+
+    public void SetBedCount(int count)
+    {
+        if (count < 1)
+            throw new DomainException("INVALID_BED_COUNT", "Bed count must be at least 1.");
+        BedCount = count;
+        // Rebuild beds list: keep existing beds, add new ones with defaults, trim excess
+        var beds = Beds.ToList();
+        // Always sync bed 1 from the legacy fields
+        var bed1 = new ValueObjects.BedDefinition(0, BedWidthMm, BedDepthMm, BedHeightMm, BedPositionXMm, BedPositionYMm);
+        if (beds.Count == 0) beds.Add(bed1); else beds[0] = bed1;
+        // Add new beds with default size/position
+        while (beds.Count < count)
+        {
+            var i = beds.Count;
+            beds.Add(new ValueObjects.BedDefinition(i, BedWidthMm, BedDepthMm, BedHeightMm,
+                BedPositionXMm + (BedWidthMm + 20) * i, BedPositionYMm));
+        }
+        // Trim excess
+        while (beds.Count > count) beds.RemoveAt(beds.Count - 1);
+        BedsJson = System.Text.Json.JsonSerializer.Serialize(beds, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
+        Touch();
+    }
+
+    public void SetBeds(IReadOnlyList<ValueObjects.BedDefinition> beds)
+    {
+        if (beds is null || beds.Count == 0)
+            throw new DomainException("INVALID_BEDS", "At least one bed is required.");
+        BedCount = beds.Count;
+        // Sync legacy single-bed fields from bed 1
+        var bed1 = beds[0];
+        BedWidthMm = bed1.WidthMm;
+        BedDepthMm = bed1.DepthMm;
+        BedHeightMm = bed1.HeightMm;
+        BedPositionXMm = bed1.PositionXMm;
+        BedPositionYMm = bed1.PositionYMm;
+        BedsJson = System.Text.Json.JsonSerializer.Serialize(beds.Select((b, i) =>
+            new ValueObjects.BedDefinition(i, b.WidthMm, b.DepthMm, b.HeightMm, b.PositionXMm, b.PositionYMm)).ToList(),
+            new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
         Touch();
     }
 

@@ -1,10 +1,13 @@
+using HybridSlicer.Application.Common;
 using HybridSlicer.Application.Interfaces.Repositories;
 using HybridSlicer.Application.UseCases.GenerateToolpaths;
 using HybridSlicer.Application.UseCases.ImportStl;
 using HybridSlicer.Application.UseCases.PlanHybridProcess;
 using HybridSlicer.Application.UseCases.SlicePrintJob;
+using HybridSlicer.Infrastructure.Slicing;
 using MediatR;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace HybridSlicer.Api.Controllers;
 
@@ -14,11 +17,19 @@ public sealed class JobsController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly IPrintJobRepository _jobs;
+    private readonly MultiBedMerger _merger;
+    private readonly StorageOptions _storage;
 
-    public JobsController(IMediator mediator, IPrintJobRepository jobs)
+    public JobsController(
+        IMediator mediator,
+        IPrintJobRepository jobs,
+        MultiBedMerger merger,
+        IOptions<StorageOptions> storage)
     {
         _mediator = mediator;
         _jobs = jobs;
+        _merger = merger;
+        _storage = storage.Value;
     }
 
     [HttpGet]
@@ -54,7 +65,9 @@ public sealed class JobsController : ControllerBase
             InfillPattern: request.InfillPattern,
             InfillDensityPct: request.InfillDensityPct,
             SupportInfillPattern: request.SupportInfillPattern,
-            SupportInfillDensityPct: request.SupportInfillDensityPct), ct);
+            SupportInfillDensityPct: request.SupportInfillDensityPct,
+            BedIndex: request.BedIndex,
+            ParentJobId: request.ParentJobId), ct);
 
         return CreatedAtAction(nameof(GetById), new { id = result.JobId }, result);
     }
@@ -156,6 +169,82 @@ public sealed class JobsController : ControllerBase
         return File(stream, "text/plain", $"hybrid_{id}.gcode");
     }
 
+    /// <summary>
+    /// Merges per-bed sliced G-code into one final print G-code, interleaving layers.
+    /// Creates a real merged job that can be selected in Hybrid Preview, Dashboard, etc.
+    /// </summary>
+    [HttpPost("merge-beds")]
+    public async Task<IActionResult> MergeBeds([FromBody] MergeBedsRequest request, CancellationToken ct)
+    {
+        if (request.JobIds.Count < 2) return BadRequest("At least 2 bed jobs required.");
+
+        var jobs = new List<Domain.Entities.PrintJob>();
+        foreach (var jid in request.JobIds)
+        {
+            var j = await _jobs.GetByIdAsync(jid, ct);
+            if (j is null) return NotFound($"Job {jid} not found.");
+            if (j.PrintGCodePath is null) return BadRequest($"Job {jid} has not been sliced yet.");
+            if (!System.IO.File.Exists(j.PrintGCodePath)) return NotFound($"G-code for job {jid} not found on disk.");
+            jobs.Add(j);
+        }
+
+        // Use the first bed job as template for the merged job's profile references
+        var template = jobs[0];
+
+        // Create a real merged job
+        var mergedJob = Domain.Entities.PrintJob.Create(
+            name: request.Name ?? $"{template.Name} (merged {jobs.Count} beds)",
+            stlFilePath: template.StlFilePath,
+            machineProfileId: template.MachineProfileId,
+            printProfileId: template.PrintProfileId,
+            materialId: template.MaterialId,
+            supportEnabled: template.SupportEnabled,
+            parentJobId: null);
+
+        // Create output directory and merge
+        var jobDir = Path.Combine(_storage.Root, "jobs", mergedJob.Id.ToString());
+        Directory.CreateDirectory(jobDir);
+        var outputPath = Path.Combine(jobDir, "print.gcode");
+
+        var bedPaths = jobs.Select(j => j.PrintGCodePath!).ToList();
+        await _merger.MergeAsync(bedPaths, outputPath, request.LayerStep, ct);
+
+        // Also merge CNC toolpath files if they exist
+        var cncPaths = jobs.Where(j => j.ToolpathGCodePath is not null && System.IO.File.Exists(j.ToolpathGCodePath))
+            .Select(j => j.ToolpathGCodePath!).ToList();
+        string? mergedToolpathPath = null;
+        if (cncPaths.Count > 0)
+        {
+            mergedToolpathPath = Path.Combine(jobDir, "toolpath.gcode");
+            await _merger.MergeAsync(cncPaths, mergedToolpathPath, request.LayerStep, ct);
+        }
+
+        // Count total layers from merged output
+        var totalLayers = 0;
+        foreach (var line in await System.IO.File.ReadAllLinesAsync(outputPath, ct))
+            if (line.StartsWith(";LAYER:")) totalLayers++;
+
+        // Mark the merged job as sliced (so it appears in Dashboard, Hybrid Planner, Preview)
+        mergedJob.MarkSlicing();
+        mergedJob.MarkSlicingComplete(outputPath, Math.Max(totalLayers, 1));
+        if (mergedToolpathPath is not null)
+        {
+            mergedJob.MarkGeneratingToolpaths();
+            mergedJob.MarkToolpathsComplete(mergedToolpathPath);
+        }
+
+        // Set parent references on per-bed jobs
+        await _jobs.AddAsync(mergedJob, ct);
+
+        return Ok(new {
+            jobId = mergedJob.Id,
+            mergedPath = outputPath,
+            beds = jobs.Count,
+            layerStep = request.LayerStep,
+            totalLayers,
+        });
+    }
+
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct)
     {
@@ -187,7 +276,9 @@ public record UploadStlRequest(
     [FromForm] string InfillPattern = "grid",
     [FromForm] double? InfillDensityPct = 15,
     [FromForm] string SupportInfillPattern = "grid",
-    [FromForm] double? SupportInfillDensityPct = null);
+    [FromForm] double? SupportInfillDensityPct = null,
+    [FromForm] int? BedIndex = null,
+    [FromForm] Guid? ParentJobId = null);
 
 public record CreateJobRequest(string JobName, Guid MachineProfileId, Guid PrintProfileId, Guid MaterialId);
 public record GenerateToolpathsRequest(
@@ -206,3 +297,4 @@ public record GenerateToolpathsRequest(
     double SpindleEndY              = 0.0,
     double? SpindleEndZ             = null);
 public record PlanHybridRequest(int MachineEveryNLayers);
+public record MergeBedsRequest(IReadOnlyList<Guid> JobIds, int LayerStep = 1, string? Name = null);

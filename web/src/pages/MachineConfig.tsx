@@ -40,10 +40,13 @@ interface MachineForm {
   extruderAssignments: ExtruderAssignment[]
   ipAddress: string
   port: number
+  machinePassword: string
   cncOffsetX: number
   cncOffsetY: number
   cncOffsetZ: number
   cncOffsetRot: number
+  extruderAxes: string
+  cncAxes: string
 }
 
 function parseJsonArray(json: string | undefined): number[] {
@@ -95,10 +98,13 @@ function machineToForm(m: MachineProfile): MachineForm {
     extruderAssignments: m.extruderAssignments ?? [],
     ipAddress: m.ipAddress ?? '',
     port: m.port || 8080,
+    machinePassword: '',
     cncOffsetX: m.cncOffset?.x ?? 0,
     cncOffsetY: m.cncOffset?.y ?? 0,
     cncOffsetZ: m.cncOffset?.z ?? 0,
     cncOffsetRot: m.cncOffset?.rotationDeg ?? 0,
+    extruderAxes: m.extruderAxes ?? 'XYZ',
+    cncAxes: m.cncAxes ?? 'XYZ',
   }
 }
 
@@ -128,10 +134,13 @@ function emptyForm(): MachineForm {
     extruderAssignments: [{ extruderIndex: 0, duty: 'All' }],
     ipAddress: '',
     port: 8080,
+    machinePassword: '',
     cncOffsetX: 0,
     cncOffsetY: 0,
     cncOffsetZ: 0,
     cncOffsetRot: 0,
+    extruderAxes: 'XYZ',
+    cncAxes: 'XYZ',
   }
 }
 
@@ -141,6 +150,7 @@ export default function MachineConfig() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [form, setForm] = useState<MachineForm | null>(null)
   const [highlight, setHighlight] = useState<HighlightKey>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const createMutation = useMutation({
     mutationFn: machineProfilesApi.create,
@@ -159,6 +169,11 @@ export default function MachineConfig() {
 
   const openNew = () => { setEditingId(null); setForm(emptyForm()); setHighlight(null) }
   const openEdit = (m: MachineProfile) => { setEditingId(m.id); setForm(machineToForm(m)); setHighlight(null) }
+  const openDuplicate = (m: MachineProfile) => {
+    setEditingId(null)
+    setForm({ ...machineToForm(m), name: `${m.name} (copy)` })
+    setHighlight(null)
+  }
 
   const set = <K extends keyof MachineForm>(k: K, v: MachineForm[K]) =>
     setForm(f => f ? { ...f, [k]: v } : f)
@@ -221,6 +236,7 @@ export default function MachineConfig() {
       extruderAssignments: form.extruderAssignments.map(a => ({ extruderIndex: a.extruderIndex, duty: a.duty })),
       ipAddress: form.ipAddress || undefined, port: form.port,
       cncOffset: { x: form.cncOffsetX, y: form.cncOffsetY, z: form.cncOffsetZ, rotationDeg: form.cncOffsetRot },
+      extruderAxes: form.extruderAxes, cncAxes: form.cncAxes,
     }
     if (editingId) updateMutation.mutate({ id: editingId, data: payload })
     else createMutation.mutate(payload)
@@ -273,6 +289,8 @@ export default function MachineConfig() {
             <div className="flex gap-2">
               <button onClick={() => openEdit(m)}
                 className="text-sm text-gray-400 hover:text-white px-3 py-1 rounded bg-gray-800">Edit</button>
+              <button onClick={() => openDuplicate(m)}
+                className="text-sm text-gray-400 hover:text-blue-400 px-3 py-1 rounded bg-gray-800">Duplicate</button>
               <button onClick={() => { if (confirm('Delete this machine?')) deleteMutation.mutate(m.id) }}
                 className="text-sm text-gray-400 hover:text-red-400 px-3 py-1 rounded bg-gray-800">Delete</button>
             </div>
@@ -285,7 +303,8 @@ export default function MachineConfig() {
 
       {/* Modal */}
       {form && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
+          onClick={e => { if (e.target === e.currentTarget) setForm(null) }}>
           <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-3xl space-y-4 max-h-[90vh] overflow-y-auto">
             <h3 className="font-semibold text-white text-lg">{editingId ? 'Edit Machine' : 'New Machine'}</h3>
 
@@ -299,7 +318,7 @@ export default function MachineConfig() {
             <div className="border-t border-gray-800 pt-3 space-y-3">
               <h4 className="text-sm font-semibold text-white">1. Machine Frame</h4>
               <p className="text-xs text-gray-500">Total physical travel of the machine on each axis.</p>
-              <div {...hField('travel')} className="grid grid-cols-3 gap-3">
+              <div {...hField('travel')} className="grid grid-cols-3 gap-3 items-end">
                 <MField label="X Travel (mm)">
                   <NumInput value={form.travelXMm} min={1} max={5000} onChange={v => set('travelXMm', v)} />
                 </MField>
@@ -310,6 +329,11 @@ export default function MachineConfig() {
                   <NumInput value={form.travelZMm} min={1} max={5000} onChange={v => set('travelZMm', v)} />
                 </MField>
               </div>
+              <button
+                type="button"
+                onClick={() => setForm(f => f ? { ...f, travelXMm: f.travelYMm, travelYMm: f.travelXMm } : f)}
+                className="text-xs px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border border-gray-700 transition"
+              >X ↔ Y Travel</button>
             </div>
 
             {/* ── STEP 2: Beds ── */}
@@ -332,32 +356,43 @@ export default function MachineConfig() {
 
               {form.beds.map((bed, bi) => (
                 <div key={bi} className="bg-gray-800/30 rounded-lg p-3 space-y-2">
-                  <p className="text-xs font-semibold text-gray-300">Bed {bi + 1}</p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold text-gray-300">Bed {bi + 1}</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const beds = [...form.beds]
+                        beds[bi] = { ...beds[bi], widthMm: bed.depthMm, depthMm: bed.widthMm, positionXMm: bed.positionYMm, positionYMm: bed.positionXMm }
+                        set('beds', beds)
+                      }}
+                      className="text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border border-gray-600 transition"
+                    >X ↔ Y</button>
+                  </div>
                   <div {...hField('bed')} className="grid grid-cols-3 gap-2">
                     <MField label="Width X (mm)">
-                      <NumInput value={bed.widthMm} min={1} max={2000} onChange={v => {
+                      <NumInput value={bed.widthMm} min={1} max={form.travelXMm} onChange={v => {
                         const beds = [...form.beds]; beds[bi] = { ...beds[bi], widthMm: v }; set('beds', beds)
                       }} />
                     </MField>
-                    <MField label="Depth Y (mm)">
-                      <NumInput value={bed.depthMm} min={1} max={2000} onChange={v => {
+                    <MField label="Length Y (mm)">
+                      <NumInput value={bed.depthMm} min={1} max={form.travelYMm} onChange={v => {
                         const beds = [...form.beds]; beds[bi] = { ...beds[bi], depthMm: v }; set('beds', beds)
                       }} />
                     </MField>
                     <MField label="Height Z (mm)">
-                      <NumInput value={bed.heightMm} min={1} max={2000} onChange={v => {
+                      <NumInput value={bed.heightMm} min={1} max={form.travelZMm} onChange={v => {
                         const beds = [...form.beds]; beds[bi] = { ...beds[bi], heightMm: v }; set('beds', beds)
                       }} />
                     </MField>
                   </div>
                   <div {...hField('bed')} className="grid grid-cols-2 gap-2">
                     <MField label="Position X (mm)">
-                      <NumInput value={bed.positionXMm} min={0} max={5000} step={0.1} onChange={v => {
+                      <NumInput value={bed.positionXMm} min={0} max={form.travelXMm} step={0.1} onChange={v => {
                         const beds = [...form.beds]; beds[bi] = { ...beds[bi], positionXMm: v }; set('beds', beds)
                       }} />
                     </MField>
                     <MField label="Position Y (mm)">
-                      <NumInput value={bed.positionYMm} min={0} max={5000} step={0.1} onChange={v => {
+                      <NumInput value={bed.positionYMm} min={0} max={form.travelYMm} step={0.1} onChange={v => {
                         const beds = [...form.beds]; beds[bi] = { ...beds[bi], positionYMm: v }; set('beds', beds)
                       }} />
                     </MField>
@@ -365,7 +400,14 @@ export default function MachineConfig() {
                 </div>
               ))}
 
-              <p className="text-xs text-gray-500 mt-2">Machine origin (0,0) position in the travel frame.</p>
+              <div className="flex items-center justify-between mt-2">
+                <p className="text-xs text-gray-500">Machine origin (0,0) position in the travel frame.</p>
+                <button
+                  type="button"
+                  onClick={() => setForm(f => f ? { ...f, originXMm: f.originYMm, originYMm: f.originXMm } : f)}
+                  className="text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border border-gray-600 transition"
+                >X ↔ Y</button>
+              </div>
               <div {...hField('origin')} className="grid grid-cols-2 gap-3">
                 <MField label="Origin X (mm)">
                   <NumInput value={form.originXMm} min={0} max={5000} step={0.1}
@@ -410,6 +452,24 @@ export default function MachineConfig() {
                 isHybrid={form.type === 'Hybrid'}
                 cncOffsetX={form.cncOffsetX}
                 cncOffsetY={form.cncOffsetY}
+                onSwapXY={() => setForm(f => {
+                  if (!f) return f
+                  return {
+                    ...f,
+                    travelXMm: f.travelYMm, travelYMm: f.travelXMm,
+                    originXMm: f.originYMm, originYMm: f.originXMm,
+                    bedWidthMm: f.bedDepthMm, bedDepthMm: f.bedWidthMm,
+                    bedPositionXMm: f.bedPositionYMm, bedPositionYMm: f.bedPositionXMm,
+                    leftBedEdgeOffsetMm: f.frontBedEdgeOffsetMm, frontBedEdgeOffsetMm: f.leftBedEdgeOffsetMm,
+                    rightBedEdgeOffsetMm: f.backBedEdgeOffsetMm, backBedEdgeOffsetMm: f.rightBedEdgeOffsetMm,
+                    cncOffsetX: f.cncOffsetY, cncOffsetY: f.cncOffsetX,
+                    beds: f.beds.map(b => ({
+                      ...b,
+                      widthMm: b.depthMm, depthMm: b.widthMm,
+                      positionXMm: b.positionYMm, positionYMm: b.positionXMm,
+                    })),
+                  }
+                })}
                 onBedPositionChange={(x, y) => setForm(f => f ? { ...f, bedPositionXMm: x, bedPositionYMm: y } : f)}
                 onBedSizeChange={(w, d) => setForm(f => f ? { ...f, bedWidthMm: w, bedDepthMm: d } : f)}
                 onBedChange={(bi, x, y, w, d) => setForm(f => {
@@ -523,13 +583,17 @@ export default function MachineConfig() {
             {/* ── STEP 4: Network ── */}
             <div className="border-t border-gray-800 pt-3 space-y-3">
               <h4 className="text-sm font-semibold text-white">4. Network (optional)</h4>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <MField label="IP Address">
                   <input className="input w-full" value={form.ipAddress}
                     onChange={e => set('ipAddress', e.target.value)} placeholder="192.168.1.100" />
                 </MField>
                 <MField label="Port">
                   <NumInput value={form.port} min={1} max={65535} onChange={v => set('port', v)} />
+                </MField>
+                <MField label="Password">
+                  <input className="input w-full" type="password" value={form.machinePassword}
+                    onChange={e => set('machinePassword', e.target.value)} placeholder="(empty)" />
                 </MField>
               </div>
             </div>
@@ -582,6 +646,42 @@ export default function MachineConfig() {
               </div>
             )}
 
+            {/* ── Advanced: Axis Naming ── */}
+            <div className="border-t border-gray-800 pt-3">
+              <button type="button" onClick={() => setShowAdvanced(v => !v)}
+                className="flex items-center gap-2 text-sm font-semibold text-gray-400 hover:text-white transition w-full">
+                <span className={`transition-transform ${showAdvanced ? 'rotate-90' : ''}`}>▶</span>
+                Advanced
+              </button>
+              {showAdvanced && (
+                <div className="mt-3 space-y-3">
+                  <p className="text-xs text-gray-500">
+                    Remap G-code axis letters per component. Default is XYZ. E.g. set CNC to UVW so CNC G-code uses U/V/W instead of X/Y/Z.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <MField label="Extruder Axes">
+                      <input className="input w-full font-mono uppercase" maxLength={3} value={form.extruderAxes}
+                        onChange={e => set('extruderAxes', e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3))}
+                        placeholder="XYZ" />
+                      <p className="text-[10px] text-gray-600 mt-0.5">
+                        {form.extruderAxes === 'XYZ' ? 'Default — no remapping' :
+                          `X→${form.extruderAxes[0] ?? 'X'} Y→${form.extruderAxes[1] ?? 'Y'} Z→${form.extruderAxes[2] ?? 'Z'}`}
+                      </p>
+                    </MField>
+                    <MField label="CNC Axes">
+                      <input className="input w-full font-mono uppercase" maxLength={3} value={form.cncAxes}
+                        onChange={e => set('cncAxes', e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3))}
+                        placeholder="XYZ" />
+                      <p className="text-[10px] text-gray-600 mt-0.5">
+                        {form.cncAxes === 'XYZ' ? 'Default — no remapping' :
+                          `X→${form.cncAxes[0] ?? 'X'} Y→${form.cncAxes[1] ?? 'Y'} Z→${form.cncAxes[2] ?? 'Z'}`}
+                      </p>
+                    </MField>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Actions */}
             <div className="flex gap-3 justify-end pt-2 border-t border-gray-800">
               <button onClick={() => setForm(null)}
@@ -597,6 +697,13 @@ export default function MachineConfig() {
                 </button>
               </DisabledHint>
             </div>
+            {(createMutation.isError || updateMutation.isError) && (
+              <p className="text-red-400 text-xs mt-2">
+                {((createMutation.error ?? updateMutation.error) as any)?.response?.data
+                  ?? ((createMutation.error ?? updateMutation.error) as Error)?.message
+                  ?? 'Save failed'}
+              </p>
+            )}
           </div>
         </div>
       )}
@@ -700,15 +807,27 @@ function NumInput({
   value: number; min?: number; max?: number; step?: number
   onChange: (v: number) => void
 }) {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState('')
   return (
     <input
       type="number"
       className="input text-sm w-full"
-      value={value}
+      value={editing ? text : value}
       min={min}
       max={max}
       step={step}
-      onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) onChange(v) }}
+      onFocus={e => { setEditing(true); setText(e.target.value) }}
+      onChange={e => {
+        setText(e.target.value)
+        const v = parseFloat(e.target.value)
+        if (!isNaN(v)) onChange(v)
+      }}
+      onBlur={() => {
+        setEditing(false)
+        const v = parseFloat(text)
+        onChange(isNaN(v) ? 0 : v)
+      }}
     />
   )
 }

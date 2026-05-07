@@ -81,9 +81,17 @@ export const jobsApi = {
   downloadGCode: (id: string) =>
     http.get(`/jobs/${id}/gcode`, { responseType: 'blob' }).then(r => r.data),
 
-  mergeBeds: (jobIds: string[], layerStep: number, name?: string) =>
+  mergeBeds: (
+    jobIds: string[], layerStep: number, name?: string,
+    hybrid = false, cncParams?: {
+      cncToolId: string; machineEveryNLayers: number;
+      machineInnerWalls: boolean; avoidSupports: boolean;
+      supportClearanceMm: number; autoMachiningFrequency: boolean;
+      zSafetyOffsetMm: number; spindleRpmOverride: number | null;
+    },
+  ) =>
     http.post<{ jobId: string; mergedPath: string; beds: number; layerStep: number; totalLayers: number }>(
-      '/jobs/merge-beds', { jobIds, layerStep, name }).then(r => r.data),
+      '/jobs/merge-beds', { jobIds, layerStep, name, hybrid, ...cncParams }).then(r => r.data),
 
   deleteJob: (id: string) => http.delete(`/jobs/${id}`),
 }

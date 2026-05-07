@@ -170,9 +170,9 @@ function buildStages(
   return stages
 }
 
-// Speed mapping: slider 1-100 → segs/sec on log scale (~3 to ~3 000)
+// Speed mapping: slider 1-100 → segs/sec on log scale (~1 to ~1 000)
 function sliderToSegsPerSec(v: number): number {
-  return Math.round(Math.pow(10, 0.5 + (v / 100) * 3))
+  return Math.round(Math.pow(10, (v / 100) * 3))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -192,6 +192,14 @@ interface Visibility {
 // Three.js Hybrid Simulation Viewer
 // ─────────────────────────────────────────────────────────────────────────────
 
+interface BedInfo {
+  index: number
+  widthMm: number
+  depthMm: number
+  positionXMm: number
+  positionYMm: number
+}
+
 interface ViewerProps {
   printGCode: string
   cncGCode: string
@@ -202,11 +210,18 @@ interface ViewerProps {
   toolDiameterMm: number
   bedWidth: number
   bedDepth: number
+  travelX?: number
+  travelY?: number
+  travelZ?: number
+  originX?: number
+  originY?: number
+  beds?: BedInfo[]
 }
 
-function HybridSimViewer({
+export function HybridSimViewer({
   printGCode, cncGCode, machinedLayers, totalPrintLayers,
-  layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth
+  layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth,
+  travelX, travelY, travelZ, originX, originY, beds
 }: ViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef  = useRef<THREE.WebGLRenderer | null>(null)
@@ -231,6 +246,15 @@ function HybridSimViewer({
   const [isPlaying,     setIsPlaying]     = useState(false)
   const [speed,         setSpeed]         = useState(15)       // default low-range slider value
   const [stageProgress, setStageProgress] = useState(0)
+
+  // Reset simulation state when data changes (new job loaded)
+  useEffect(() => {
+    stageIdxRef.current = 0
+    progressRef.current = 0
+    setStageIdx(0)
+    setStageProgress(0)
+    setIsPlaying(false)
+  }, [parsed])
   const [vis, setVis] = useState<Visibility>({
     part: true, support: true, cncRapid: true, cncCut: true, nozzle: true, tool: true,
   })
@@ -268,8 +292,15 @@ function HybridSimViewer({
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x0d0d14)
 
+    // Machine centre in scene coordinates
+    const ox = originX ?? 0, oy = originY ?? 0
+    const txVal = travelX ?? bedWidth, tyVal = travelY ?? bedDepth
+    const machineCentreX = -ox + txVal / 2
+    const machineCentreZ = -oy + tyVal / 2
+    const viewDist = Math.max(txVal, tyVal, 200) * 1.4
+
     const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 5000)
-    camera.position.set(0, 150, 280)
+    camera.position.set(machineCentreX, viewDist * 0.5, machineCentreZ + viewDist * 0.8)
     cameraRef.current = camera
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -279,8 +310,17 @@ function HybridSimViewer({
     rendererRef.current = renderer
 
     const controls = new OrbitControls(camera, renderer.domElement)
+    controls.target.set(machineCentreX, 0, machineCentreZ)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
+    controls.enablePan = true
+    controls.screenSpacePanning = true
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.PAN,
+    }
+    controls.update()
     controlsRef.current = controls
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.6))
@@ -291,11 +331,87 @@ function HybridSimViewer({
     fill.position.set(-100, -50, -100)
     scene.add(fill)
 
-    const bedGeo = new THREE.PlaneGeometry(bedWidth, bedDepth)
-    bedGeo.rotateX(-Math.PI / 2)
-    scene.add(new THREE.Mesh(bedGeo, new THREE.MeshPhongMaterial({ color: 0x1a1a2e, side: THREE.DoubleSide })))
-    scene.add(new THREE.GridHelper(Math.max(bedWidth, bedDepth), 20, 0x333355, 0x222233))
+    // Machine dimensions (ox, oy, txVal, tyVal already computed above for camera)
+    const tx = txVal, ty = tyVal, tz = travelZ ?? 350
+
+    // ── Travel envelope (wireframe box) ─────────────────────────────────
+    const envGeo = new THREE.BoxGeometry(tx, tz, ty)
+    const envWire = new THREE.LineSegments(
+      new THREE.EdgesGeometry(envGeo),
+      new THREE.LineBasicMaterial({ color: 0x333355, transparent: true, opacity: 0.4 }),
+    )
+    envWire.position.set(-ox + tx / 2, tz / 2, -oy + ty / 2)
+    scene.add(envWire)
+
+    // ── Floor grid (at Y=0, spanning travel area) ───────────────────────
+    const gridSize = Math.max(tx, ty)
+    const grid = new THREE.GridHelper(gridSize, Math.round(gridSize / 20), 0x222233, 0x1a1a2e)
+    grid.position.set(-ox + tx / 2, 0, -oy + ty / 2)
+    scene.add(grid)
     scene.add(new THREE.AxesHelper(30))
+
+    // ── Per-bed plates ──────────────────────────────────────────────────
+    const bedList = beds && beds.length > 0
+      ? beds
+      : [{ index: 0, widthMm: bedWidth, depthMm: bedDepth, positionXMm: 0, positionYMm: 0 }]
+
+    const bedColors = [0x3366cc, 0x33aa55, 0xcc5533, 0xaaaa33]
+    const edgeColors = [0x5588ee, 0x55cc77, 0xee7755, 0xcccc55]
+
+    for (const bed of bedList) {
+      const bc = bedColors[bed.index % bedColors.length]
+      const ec = edgeColors[bed.index % edgeColors.length]
+
+      // Bed centre in scene coords
+      const bcx = bed.positionXMm + bed.widthMm / 2 - ox
+      const bcy = bed.positionYMm + bed.depthMm / 2 - oy
+
+      // Bed surface
+      const bGeo = new THREE.PlaneGeometry(bed.widthMm, bed.depthMm)
+      bGeo.rotateX(-Math.PI / 2)
+      const bMesh = new THREE.Mesh(bGeo, new THREE.MeshPhongMaterial({
+        color: bc, side: THREE.DoubleSide, transparent: true, opacity: 0.15,
+      }))
+      bMesh.position.set(bcx, 0.05, bcy)
+      scene.add(bMesh)
+
+      // Bed outline (colored border)
+      const outlineGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bed.widthMm, bed.depthMm))
+      const outline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: ec, linewidth: 2 }))
+      outline.rotateX(-Math.PI / 2)
+      outline.position.set(bcx, 0.1, bcy)
+      scene.add(outline)
+
+      // Corner marker — small cylinder at front-left corner
+      const cornerX = bed.positionXMm - ox + 2
+      const cornerZ = bed.positionYMm - oy + 2
+      const markerH = 8
+      const marker = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.5, 1.5, markerH, 12),
+        new THREE.MeshPhongMaterial({ color: ec, shininess: 80 }),
+      )
+      marker.position.set(cornerX, markerH / 2, cornerZ)
+      scene.add(marker)
+
+      // Number disc on top of corner marker
+      const discCanvas = document.createElement('canvas')
+      discCanvas.width = 64; discCanvas.height = 64
+      const dCtx = discCanvas.getContext('2d')!
+      dCtx.beginPath()
+      dCtx.arc(32, 32, 30, 0, Math.PI * 2)
+      dCtx.fillStyle = `#${ec.toString(16).padStart(6, '0')}`
+      dCtx.fill()
+      dCtx.fillStyle = '#ffffff'
+      dCtx.font = 'bold 38px sans-serif'
+      dCtx.textAlign = 'center'
+      dCtx.textBaseline = 'middle'
+      dCtx.fillText(`${bed.index + 1}`, 32, 33)
+      const discTex = new THREE.CanvasTexture(discCanvas)
+      const disc = new THREE.Sprite(new THREE.SpriteMaterial({ map: discTex, transparent: true }))
+      disc.scale.set(5, 5, 1)
+      disc.position.set(cornerX, markerH + 3, cornerZ)
+      scene.add(disc)
+    }
 
     // ── Two InstancedMesh objects: part (blue) and support (orange) ──────────
     const { segs, partPrefix, suppPrefix } = parsed.print
@@ -644,6 +760,18 @@ function HybridSimViewer({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Module-level persistence (survives React navigation)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let _saved = {
+  jobId: '',
+  simReady: false,
+  printGCode: null as string | null,
+  cncGCode: null as string | null,
+  machinedLayers: [] as number[],
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main HybridPreview page
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -653,15 +781,22 @@ export default function HybridPreview() {
   const { data: machines = [] } = useQuery({ queryKey: ['machines'],      queryFn: machineProfilesApi.getAll })
   const { data: gCodeBlocks = [] } = useQuery({ queryKey: ['gcode-blocks'], queryFn: customGCodeApi.getAll })
 
-  const [jobId,          setJobId]          = useState('')
-  const [simReady,       setSimReady]       = useState(false)
-  const [printGCode,     setPrintGCode]     = useState<string | null>(null)
-  const [cncGCode,       setCncGCode]       = useState<string | null>(null)
-  const [machinedLayers, setMachinedLayers] = useState<number[]>([])
+  const [jobId,          setJobId]          = useState(() => _saved.jobId)
+  const [simReady,       setSimReady]       = useState(() => _saved.simReady)
+  const [printGCode,     setPrintGCode]     = useState<string | null>(() => _saved.printGCode)
+  const [cncGCode,       setCncGCode]       = useState<string | null>(() => _saved.cncGCode)
+  const [machinedLayers, setMachinedLayers] = useState<number[]>(() => _saved.machinedLayers)
   const [loading,        setLoading]        = useState(false)
   const [error,          setError]          = useState<string | null>(null)
 
-  const readyJobs    = jobs.filter(j => j.status === 'ToolpathsComplete' || j.status === 'Ready')
+  // Persist state to module level
+  useEffect(() => { _saved.jobId = jobId }, [jobId])
+  useEffect(() => { _saved.simReady = simReady }, [simReady])
+  useEffect(() => { _saved.printGCode = printGCode }, [printGCode])
+  useEffect(() => { _saved.cncGCode = cncGCode }, [cncGCode])
+  useEffect(() => { _saved.machinedLayers = machinedLayers }, [machinedLayers])
+
+  const readyJobs    = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete' || j.status === 'Ready')
   const selectedJob  = jobs.find(j => j.id === jobId) as PrintJob | undefined
   const printProfile = profiles.find(p => p.id === selectedJob?.printProfileId)
   const machine      = machines.find(m => m.id === selectedJob?.machineProfileId)
@@ -677,10 +812,10 @@ export default function HybridPreview() {
     if (!jobId) return
     setLoading(true); setError(null)
     try {
-      const [pg, cg] = await Promise.all([
-        jobsApi.getPrintGCode(jobId),
-        jobsApi.getToolpathGCode(jobId),
-      ])
+      const pg = await jobsApi.getPrintGCode(jobId)
+      // CNC toolpath may not exist yet (SlicingComplete jobs) — treat as empty
+      let cg = ''
+      try { cg = await jobsApi.getToolpathGCode(jobId) } catch { /* no toolpath yet */ }
       setPrintGCode(pg); setCncGCode(cg)
       const layers: number[] = []
       for (const line of cg.split('\n')) {
@@ -722,7 +857,7 @@ export default function HybridPreview() {
                 ))}
               </select>
               {jobs.length > 0 && readyJobs.length === 0 && (
-                <p className="text-xs text-yellow-500 mt-1">No jobs with toolpaths. Generate toolpaths in Hybrid Planner first.</p>
+                <p className="text-xs text-yellow-500 mt-1">No sliced jobs found. Slice a job in Import STL first.</p>
               )}
             </div>
 
@@ -758,20 +893,30 @@ export default function HybridPreview() {
               <div className="bg-red-950/40 border border-red-800 rounded-lg px-3 py-2 text-xs text-red-400">{error}</div>
             )}
 
-            <DisabledHint when={!jobId} reason="Select a job with toolpaths above to run the simulation.">
-              <button
-                onClick={loadAndRun}
-                disabled={!jobId || loading}
-                className="px-6 py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
-              >
-                {loading ? 'Loading G-code…' : '▶ Run Hybrid Simulation'}
-              </button>
-            </DisabledHint>
+            <div className="flex gap-3">
+              <DisabledHint when={!jobId} reason="Select a job with toolpaths above to run the simulation.">
+                <button
+                  onClick={loadAndRun}
+                  disabled={!jobId || loading}
+                  className="px-6 py-2.5 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
+                >
+                  {loading ? 'Loading G-code…' : '▶ Run Hybrid Simulation'}
+                </button>
+              </DisabledHint>
+              {printGCode && cncGCode !== null && (
+                <button
+                  onClick={() => setSimReady(true)}
+                  className="px-6 py-2.5 bg-cyan-800/80 hover:bg-cyan-700 text-cyan-200 rounded-lg text-sm transition"
+                >
+                  Resume Previous
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {simReady && printGCode && cncGCode && (
+      {simReady && printGCode && cncGCode !== null && (
         <div className="flex flex-col h-screen">
           <div className="flex items-center gap-4 px-6 py-3 bg-gray-900 border-b border-gray-800">
             <h2 className="text-lg font-semibold text-white">Hybrid Preview</h2>
@@ -786,7 +931,7 @@ export default function HybridPreview() {
               G-code Customisation
             </Link>
             <button
-              onClick={() => { setSimReady(false); setPrintGCode(null); setCncGCode(null) }}
+              onClick={() => setSimReady(false)}
               className="px-3 py-1 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg"
             >
               ← Back
@@ -803,6 +948,24 @@ export default function HybridPreview() {
               toolDiameterMm={3}
               bedWidth={bedWidth}
               bedDepth={bedDepth}
+              travelX={machine?.travelXMm}
+              travelY={machine?.travelYMm}
+              travelZ={machine?.bedHeightMm}
+              originX={machine?.originXMm}
+              originY={machine?.originYMm}
+              beds={machine ? (() => {
+                try {
+                  const raw = JSON.parse(machine.bedsJson || '[]') as any[]
+                  if (raw.length > 0) return raw.map((b: any, i: number) => ({
+                    index: b.index ?? b.Index ?? i,
+                    widthMm: b.widthMm ?? b.WidthMm ?? machine.bedWidthMm,
+                    depthMm: b.depthMm ?? b.DepthMm ?? machine.bedDepthMm,
+                    positionXMm: b.positionXMm ?? b.PositionXMm ?? 0,
+                    positionYMm: b.positionYMm ?? b.PositionYMm ?? 0,
+                  }))
+                } catch { /* fall through */ }
+                return [{ index: 0, widthMm: machine.bedWidthMm, depthMm: machine.bedDepthMm, positionXMm: 0, positionYMm: 0 }]
+              })() : undefined}
             />
           </div>
         </div>

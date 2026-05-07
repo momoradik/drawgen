@@ -28,6 +28,11 @@ public sealed class MachineProfilesController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateMachineProfileRequest req, CancellationToken ct)
     {
+        // Prevent duplicate names
+        var all = await _repo.GetAllAsync(ct);
+        if (all.Any(m => string.Equals(m.Name, req.Name?.Trim(), StringComparison.OrdinalIgnoreCase)))
+            return BadRequest($"A machine profile named '{req.Name?.Trim()}' already exists.");
+
         var profile = MachineProfile.Create(
             req.Name, req.Type,
             req.BedWidthMm, req.BedDepthMm, req.BedHeightMm,
@@ -64,6 +69,16 @@ public sealed class MachineProfilesController : ControllerBase
             profile.SetExtruderAssignments(
                 req.ExtruderAssignments.Select(a => new ExtruderAssignment(a.ExtruderIndex, a.Duty)).ToList());
 
+        if (req.CncOffset is not null)
+            profile.UpdateCncOffset(new Domain.ValueObjects.MachineOffset(
+                req.CncOffset.X, req.CncOffset.Y, req.CncOffset.Z, req.CncOffset.RotationDeg));
+
+        if (req.SafeClearanceHeightMm.HasValue)
+            profile.SetSafeClearanceHeight(req.SafeClearanceHeightMm.Value);
+
+        if (req.ExtruderAxes is not null) profile.SetExtruderAxes(req.ExtruderAxes);
+        if (req.CncAxes is not null) profile.SetCncAxes(req.CncAxes);
+
         await _repo.AddAsync(profile, ct);
         return CreatedAtAction(nameof(GetById), new { id = profile.Id }, profile);
     }
@@ -74,7 +89,17 @@ public sealed class MachineProfilesController : ControllerBase
         var profile = await _repo.GetByIdAsync(id, ct);
         if (profile is null) return NotFound();
 
-        if (req.Name is not null) profile.Rename(req.Name);
+        if (req.Name is not null)
+        {
+            var trimmed = req.Name.Trim();
+            if (!string.Equals(trimmed, profile.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                var all = await _repo.GetAllAsync(ct);
+                if (all.Any(m => m.Id != id && string.Equals(m.Name, trimmed, StringComparison.OrdinalIgnoreCase)))
+                    return BadRequest($"A machine profile named '{trimmed}' already exists.");
+            }
+            profile.Rename(req.Name);
+        }
 
         if (req.TravelXMm.HasValue || req.TravelYMm.HasValue || req.TravelZMm.HasValue)
             profile.SetTravel(
@@ -140,6 +165,9 @@ public sealed class MachineProfilesController : ControllerBase
         if (req.SafeClearanceHeightMm.HasValue)
             profile.SetSafeClearanceHeight(req.SafeClearanceHeightMm.Value);
 
+        if (req.ExtruderAxes is not null) profile.SetExtruderAxes(req.ExtruderAxes);
+        if (req.CncAxes is not null) profile.SetCncAxes(req.CncAxes);
+
         await _repo.UpdateAsync(profile, ct);
         return Ok(profile);
     }
@@ -195,7 +223,11 @@ public record CreateMachineProfileRequest(
     double BackBedEdgeOffsetMm = 0,
     IReadOnlyList<ExtruderAssignmentDto>? ExtruderAssignments = null,
     string? IpAddress = null,
-    int Port = 8080);
+    int Port = 8080,
+    OffsetDto? CncOffset = null,
+    double? SafeClearanceHeightMm = null,
+    string? ExtruderAxes = null,
+    string? CncAxes = null);
 
 public record UpdateMachineProfileRequest(
     string? Name = null,
@@ -222,7 +254,9 @@ public record UpdateMachineProfileRequest(
     string? IpAddress = null,
     int? Port = null,
     OffsetDto? CncOffset = null,
-    double? SafeClearanceHeightMm = null);
+    double? SafeClearanceHeightMm = null,
+    string? ExtruderAxes = null,
+    string? CncAxes = null);
 
 public record UpdateOffsetsRequest(
     double X, double Y, double Z, double RotationDeg,

@@ -13,7 +13,7 @@ import StlViewer, {
   DEFAULT_TRANSFORM,
 } from '../components/viewer/StlViewer'
 import GCodePreview3D from '../components/viewer/GCodePreview3D'
-import { jobsApi, machineProfilesApi, printProfilesApi, materialsApi } from '../api/client'
+import { jobsApi, machineProfilesApi, printProfilesApi, materialsApi, toolsApi } from '../api/client'
 import { useMachineConnection } from '../hooks/useMachineConnection'
 import { useAppStore } from '../store'
 
@@ -110,6 +110,15 @@ interface SavedState {
   infillDensity: number
   supportInfillPattern: InfillPattern
   supportInfillDensity: number
+  // Hybrid CNC options (only used when machine type is Hybrid)
+  cncToolId: string
+  machineEveryN: number
+  machineInnerWalls: boolean
+  avoidSupports: boolean
+  supportClearanceMm: number
+  autoMachiningFrequency: boolean
+  zSafetyOffsetMm: number
+  spindleRpmOverride: number | null
 }
 
 const _initState: SavedState = {
@@ -117,6 +126,9 @@ const _initState: SavedState = {
   generatedJobId: null, activeTab: 'import', supportEnabled: false, supportType: 'normal',
   supportPlacement: 'everywhere', infillPattern: 'grid', infillDensity: 15,
   supportInfillPattern: 'grid', supportInfillDensity: 15,
+  cncToolId: '', machineEveryN: 10, machineInnerWalls: false, avoidSupports: false,
+  supportClearanceMm: 2.0, autoMachiningFrequency: false, zSafetyOffsetMm: 0,
+  spindleRpmOverride: null,
 }
 let _saved: SavedState = { ..._initState }
 
@@ -159,6 +171,16 @@ export default function StlImport() {
   const [supportInfillPattern, setSupportInfillPattern] = useState<InfillPattern>(() => _saved.supportInfillPattern)
   const [supportInfillDensity, setSupportInfillDensity] = useState<number>(() => _saved.supportInfillDensity)
 
+  // Hybrid CNC state (only shown when machine is Hybrid)
+  const [cncToolId, setCncToolId]                       = useState(() => _saved.cncToolId)
+  const [machineEveryN, setMachineEveryN]               = useState(() => _saved.machineEveryN)
+  const [machineInnerWalls, setMachineInnerWalls]       = useState(() => _saved.machineInnerWalls)
+  const [avoidSupports, setAvoidSupports]               = useState(() => _saved.avoidSupports)
+  const [supportClearanceMm, setSupportClearanceMm]     = useState(() => _saved.supportClearanceMm)
+  const [autoMachiningFrequency, setAutoMachiningFrequency] = useState(() => _saved.autoMachiningFrequency)
+  const [zSafetyOffsetMm, setZSafetyOffsetMm]           = useState(() => _saved.zSafetyOffsetMm)
+  const [spindleRpmOverride, setSpindleRpmOverride]     = useState<number | null>(() => _saved.spindleRpmOverride)
+
   const [buildVolume, setBuildVolume]     = useState<BuildVolume>({ width: 220, depth: 220, height: 250 })
   const [activeBedIndex, setActiveBedIndex] = useState(0)
   const [bedLayerStep, setBedLayerStep] = useState(1)
@@ -183,6 +205,7 @@ export default function StlImport() {
   const { data: machines = [] } = useQuery({ queryKey: ['machines'], queryFn: machineProfilesApi.getAll })
   const { data: profiles = [] } = useQuery({ queryKey: ['printProfiles'], queryFn: printProfilesApi.getAll })
   const { data: materials = [] } = useQuery({ queryKey: ['materials'],     queryFn: materialsApi.getAll })
+  const { data: cncTools = [] } = useQuery({ queryKey: ['cncTools'], queryFn: toolsApi.getAll })
 
   const deleteMachineMutation = useMutation({
     mutationFn: (id: string) => machineProfilesApi.delete(id),
@@ -232,6 +255,14 @@ export default function StlImport() {
   useEffect(() => { _saved.infillDensity = infillDensity }, [infillDensity])
   useEffect(() => { _saved.supportInfillPattern = supportInfillPattern }, [supportInfillPattern])
   useEffect(() => { _saved.supportInfillDensity = supportInfillDensity }, [supportInfillDensity])
+  useEffect(() => { _saved.cncToolId = cncToolId }, [cncToolId])
+  useEffect(() => { _saved.machineEveryN = machineEveryN }, [machineEveryN])
+  useEffect(() => { _saved.machineInnerWalls = machineInnerWalls }, [machineInnerWalls])
+  useEffect(() => { _saved.avoidSupports = avoidSupports }, [avoidSupports])
+  useEffect(() => { _saved.supportClearanceMm = supportClearanceMm }, [supportClearanceMm])
+  useEffect(() => { _saved.autoMachiningFrequency = autoMachiningFrequency }, [autoMachiningFrequency])
+  useEffect(() => { _saved.zSafetyOffsetMm = zSafetyOffsetMm }, [zSafetyOffsetMm])
+  useEffect(() => { _saved.spindleRpmOverride = spindleRpmOverride }, [spindleRpmOverride])
 
   // Parse beds from the selected machine (handles both PascalCase and camelCase JSON)
   const selectedMachineBeds = (() => {
@@ -292,6 +323,8 @@ export default function StlImport() {
   const selectedModel   = models.find(m => m.id === selectedId) ?? null
   const selectedMachine = machines.find(m => m.id === machineId)
   const selectedProfile = profiles.find(p => p.id === profileId)
+  const isHybrid = selectedMachine?.type === 'Hybrid'
+  const selectedCncTool = cncTools.find(t => t.id === cncToolId)
 
   const addFile = useCallback((f: File) => {
     if (!f.name.toLowerCase().endsWith('.stl')) return
@@ -310,7 +343,7 @@ export default function StlImport() {
       return [...prev, entry]
     })
     setSelectedId(id)
-  }, [])
+  }, [activeBedIndex])
 
   const removeModel = (id: string) => {
     setModels(prev => {
@@ -388,7 +421,7 @@ export default function StlImport() {
     if (!machineId || !profileId || !materialId || !jobName) return
 
     if (selectedMachineBeds.length > 1) {
-      // Multi-bed: slice each bed separately, then merge
+      // Multi-bed: slice each bed separately, then merge into one final file
       setIsMergingBeds(true)
       try {
         const jobIds: string[] = []
@@ -416,13 +449,33 @@ export default function StlImport() {
           jobIds.push(jobId)
           setPerBedJobIds(prev => ({ ...prev, [bi]: jobId }))
         }
+
+        const useHybrid = isHybrid && !!cncToolId
+
         if (jobIds.length >= 2) {
-          const mergeResult = await jobsApi.mergeBeds(jobIds, bedLayerStep, jobName)
+          // Multi-bed merge — backend auto-generates CNC toolpaths per bed when hybrid
+          const mergeResult = await jobsApi.mergeBeds(
+            jobIds, useHybrid ? machineEveryN : bedLayerStep, jobName,
+            useHybrid,
+            useHybrid ? {
+              cncToolId, machineEveryNLayers: machineEveryN,
+              machineInnerWalls, avoidSupports, supportClearanceMm,
+              autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride,
+            } : undefined,
+          )
           qc.invalidateQueries({ queryKey: ['jobs'] })
           setGeneratedJobId(mergeResult.jobId)
-        } else {
+        } else if (jobIds.length === 1) {
+          // Only 1 bed had models — still generate CNC + merge for hybrid
+          if (useHybrid) {
+            await jobsApi.generateToolpaths(
+              jobIds[0], cncToolId, machineEveryN,
+              machineInnerWalls, avoidSupports, supportClearanceMm,
+              autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride,
+            )
+          }
           qc.invalidateQueries({ queryKey: ['jobs'] })
-          if (jobIds.length > 0) setGeneratedJobId(jobIds[0])
+          setGeneratedJobId(jobIds[0])
         }
         setActiveTab('preview')
       } finally {
@@ -448,6 +501,16 @@ export default function StlImport() {
       fd.append('supportInfillDensityPct', supportInfillDensity.toString())
       const { jobId } = await uploadMutation.mutateAsync(fd)
       await sliceMutation.mutateAsync(jobId)
+
+      // For hybrid single-bed: also generate toolpaths automatically
+      if (isHybrid && cncToolId) {
+        await jobsApi.generateToolpaths(
+          jobId, cncToolId, machineEveryN,
+          machineInnerWalls, avoidSupports, supportClearanceMm,
+          autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride,
+        )
+      }
+
       qc.invalidateQueries({ queryKey: ['jobs'] })
       setGeneratedJobId(jobId)
       setActiveTab('preview')
@@ -568,8 +631,8 @@ export default function StlImport() {
 
       {activeTab === 'preview' && (Object.keys(bedPreviews).length > 0 || generatedJobId) ? (
         <div className="flex flex-col gap-3 flex-1 min-h-0">
-          {/* Bed preview tabs for multi-bed */}
-          {selectedMachineBeds.length > 1 && (
+          {/* Bed preview tabs for multi-bed (hidden for hybrid — combined view) */}
+          {selectedMachineBeds.length > 1 && !(generatedJobId && isHybrid) && (
             <div className="flex gap-1 flex-shrink-0">
               {selectedMachineBeds.map((_: any, bi: number) => (
                 <button key={bi} onClick={() => setActiveBedIndex(bi)}
@@ -613,11 +676,20 @@ export default function StlImport() {
                 >
                   Download Extrusion G-code
                 </a>
+                {isHybrid && (
+                  <a
+                    href={`/api/jobs/${generatedJobId}/gcode`}
+                    download={`${jobName || 'part'}_hybrid.gcode`}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-purple-900/60 hover:bg-purple-800 text-purple-200 border border-purple-700 transition"
+                  >
+                    Download Hybrid G-code
+                  </a>
+                )}
                 <Link
-                  to="/hybrid-planner"
-                  className="px-3 py-1.5 text-xs rounded-lg bg-purple-900/80 hover:bg-purple-800 text-purple-200 border border-purple-700 transition"
+                  to="/hybrid-preview"
+                  className="px-3 py-1.5 text-xs rounded-lg bg-cyan-900/80 hover:bg-cyan-800 text-cyan-200 border border-cyan-700 transition"
                 >
-                  Hybrid Planner →
+                  Hybrid Preview →
                 </Link>
               </>
             ) : (
@@ -626,7 +698,10 @@ export default function StlImport() {
             {printError && <span className="text-red-400 text-xs">{printError}</span>}
           </div>
           {generatedJobId
-            ? <GCodePreview jobId={generatedJobId} buildVolume={buildVolume} lineWidth={selectedProfile?.nozzleDiameterMm || 0.4} />
+            ? <GCodePreview jobId={generatedJobId} buildVolume={buildVolume} lineWidth={selectedProfile?.nozzleDiameterMm || 0.4}
+                travelX={selectedMachine?.travelXMm} travelY={selectedMachine?.travelYMm} travelZ={selectedMachine?.bedHeightMm}
+                originX={selectedMachine?.originXMm} originY={selectedMachine?.originYMm}
+                beds={selectedMachineBeds.length > 1 ? selectedMachineBeds : undefined} />
             : <GCodePreviewInline gcode={previewGCode!} buildVolume={buildVolume} lineWidth={selectedProfile?.nozzleDiameterMm || 0.4} />
           }
         </div>
@@ -667,11 +742,15 @@ export default function StlImport() {
         onDragOver={e => { e.preventDefault(); setIsDragOver(true) }}
         onDragLeave={() => setIsDragOver(false)}
       >
-        {models.length > 0 ? (
+        {(() => {
+          const bedModelsForViewer = selectedMachineBeds.length > 1
+            ? models.filter(m => (m.bedIndex ?? 0) === activeBedIndex)
+            : models
+          return bedModelsForViewer.length > 0 ? (
           <>
             <StlViewer
               ref={viewerRef}
-              models={models}
+              models={bedModelsForViewer}
               selectedId={selectedId}
               className="w-full h-full"
               buildVolume={buildVolume}
@@ -729,13 +808,14 @@ export default function StlImport() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
                 d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10" />
             </svg>
-            <p className="text-sm font-medium">Drag &amp; drop STL here</p>
+            <p className="text-sm font-medium">Drag &amp; drop STL here{selectedMachineBeds.length > 1 ? ` (Bed ${activeBedIndex + 1})` : ''}</p>
             <label className="cursor-pointer text-xs px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 transition text-gray-300">
               or Browse files
               <input type="file" accept=".stl" multiple className="hidden" onChange={handleFileInput} />
             </label>
           </div>
-        )}
+        )
+        })()}
       </div>
 
       {/* Slicing status indicator (while slicing for preview) */}
@@ -1028,29 +1108,107 @@ export default function StlImport() {
           </>
         )}
 
-        <Divider />
+        {/* Hybrid CNC options (only for Hybrid machines) */}
+        {isHybrid && (
+          <>
+            <Divider />
+            <section className="space-y-3">
+              <SectionHeader>CNC / Hybrid</SectionHeader>
 
-        {/* Build Volume */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <SectionHeader>Build Volume</SectionHeader>
-            {machineId && <span className="text-xs text-gray-500">from machine configuration</span>}
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <Field label="Width X (mm)">
-              <NumInput value={buildVolume.width} min={1} max={2000}
-                onChange={v => setBuildVolume(bv => ({ ...bv, width: v }))} />
-            </Field>
-            <Field label="Depth Y (mm)">
-              <NumInput value={buildVolume.depth} min={1} max={2000}
-                onChange={v => setBuildVolume(bv => ({ ...bv, depth: v }))} />
-            </Field>
-            <Field label="Height Z (mm)">
-              <NumInput value={buildVolume.height} min={1} max={2000}
-                onChange={v => setBuildVolume(bv => ({ ...bv, height: v }))} />
-            </Field>
-          </div>
-        </section>
+              <Field label="CNC Tool">
+                <select className="input" value={cncToolId} onChange={e => setCncToolId(e.target.value)}>
+                  <option value="">Select…</option>
+                  {cncTools.map(t => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} (Ø{t.diameterMm} mm · flute {t.fluteLengthMm} mm)
+                    </option>
+                  ))}
+                </select>
+                {selectedCncTool && (
+                  <div className="flex gap-3 text-[11px] text-gray-500 mt-1 flex-wrap">
+                    <span><span className="text-violet-400">Ø</span> {selectedCncTool.diameterMm} mm</span>
+                    <span><span className="text-orange-400">flute</span> {selectedCncTool.fluteLengthMm} mm</span>
+                    <span><span className="text-blue-400">length</span> {selectedCncTool.toolLengthMm ?? '—'} mm</span>
+                    <span className="text-gray-600">RPM {selectedCncTool.recommendedRpm.toLocaleString()}</span>
+                    <span className="text-gray-600">Feed {selectedCncTool.recommendedFeedMmPerMin} mm/min</span>
+                  </div>
+                )}
+              </Field>
+
+              {!autoMachiningFrequency && (
+                <Field label={`Machine every N part layers (N = ${machineEveryN})`}>
+                  <div className="flex items-center gap-2">
+                    <input type="range" min={1} max={50} step={1} value={machineEveryN}
+                      onChange={e => setMachineEveryN(+e.target.value)} className="flex-1 accent-primary" />
+                    <input type="number" min={1} max={200} value={machineEveryN}
+                      onChange={e => { const v = Math.max(1, +e.target.value); setMachineEveryN(isNaN(v) ? 10 : v) }}
+                      className="input w-16 text-center" />
+                  </div>
+                </Field>
+              )}
+
+              {autoMachiningFrequency && selectedCncTool && (
+                <p className="text-xs text-cyan-400/80 bg-cyan-950/30 rounded-lg px-3 py-2">
+                  Auto mode: machining scheduled based on flute length ({selectedCncTool.fluteLengthMm} mm)
+                  and geometry look-ahead. Manual N is ignored.
+                </p>
+              )}
+
+              <Field label="Z Safety Offset (mm)">
+                <div className="flex items-center gap-2">
+                  <input type="number" min={0} max={5} step={0.05} value={zSafetyOffsetMm}
+                    onChange={e => setZSafetyOffsetMm(Math.max(0, Math.min(5, +e.target.value)))}
+                    className="input w-24 text-center" />
+                  <span className="text-xs text-gray-600">raises CNC passes above nominal layer</span>
+                </div>
+              </Field>
+
+              {selectedCncTool && (
+                <Field label="Spindle RPM Override">
+                  <div className="flex items-center gap-2">
+                    <input type="number" min={0} max={60000} step={100}
+                      value={spindleRpmOverride ?? selectedCncTool.recommendedRpm}
+                      onChange={e => {
+                        const v = +e.target.value
+                        setSpindleRpmOverride(v === selectedCncTool.recommendedRpm ? null : v)
+                      }}
+                      className="input w-28 text-center" />
+                    {spindleRpmOverride !== null && spindleRpmOverride !== selectedCncTool.recommendedRpm && (
+                      <button onClick={() => setSpindleRpmOverride(null)}
+                        className="text-xs text-gray-500 hover:text-gray-300">Reset</button>
+                    )}
+                  </div>
+                </Field>
+              )}
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <input type="checkbox" checked={autoMachiningFrequency}
+                    onChange={e => setAutoMachiningFrequency(e.target.checked)} className="accent-primary" />
+                  Auto machining frequency
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <input type="checkbox" checked={machineInnerWalls}
+                    onChange={e => setMachineInnerWalls(e.target.checked)} className="accent-primary" />
+                  Machine inner walls
+                </label>
+                <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                  <input type="checkbox" checked={avoidSupports}
+                    onChange={e => setAvoidSupports(e.target.checked)} className="accent-primary" />
+                  Avoid supports
+                </label>
+                {avoidSupports && (
+                  <Field label="Support clearance (mm)">
+                    <input type="number" min={0} max={10} step={0.1} value={supportClearanceMm}
+                      onChange={e => setSupportClearanceMm(Math.max(0, +e.target.value))}
+                      className="input w-24 text-center" />
+                  </Field>
+                )}
+              </div>
+            </section>
+          </>
+        )}
+
 
         {models.length > 0 && (
           <>
@@ -1353,15 +1511,27 @@ function NumInput({
   value: number; min?: number; max?: number; step?: number
   onChange: (v: number) => void
 }) {
+  const [editing, setEditing] = useState(false)
+  const [text, setText] = useState('')
   return (
     <input
       type="number"
       className="input text-sm"
-      value={value}
+      value={editing ? text : value}
       min={min}
       max={max}
       step={step}
-      onChange={e => { const v = parseFloat(e.target.value); if (!isNaN(v)) onChange(v) }}
+      onFocus={e => { setEditing(true); setText(e.target.value) }}
+      onChange={e => {
+        setText(e.target.value)
+        const v = parseFloat(e.target.value)
+        if (!isNaN(v)) onChange(v)
+      }}
+      onBlur={() => {
+        setEditing(false)
+        const v = parseFloat(text)
+        onChange(isNaN(v) ? 0 : v)
+      }}
     />
   )
 }
@@ -1508,10 +1678,13 @@ function GCodePreviewInline({ gcode, buildVolume, lineWidth = 0.4 }: {
 
 // ── G-code preview component (3D + layer text) ────────────────────────────────
 
-function GCodePreview({ jobId, buildVolume, lineWidth = 0.4 }: {
+function GCodePreview({ jobId, buildVolume, lineWidth = 0.4, travelX, travelY, travelZ, originX, originY, beds }: {
   jobId: string
   buildVolume: BuildVolume
   lineWidth?: number
+  travelX?: number; travelY?: number; travelZ?: number
+  originX?: number; originY?: number
+  beds?: { index: number; widthMm: number; depthMm: number; positionXMm: number; positionYMm: number }[]
 }) {
   const [view, setView] = useState<'3d' | 'layers'>('3d')
 
@@ -1559,7 +1732,8 @@ function GCodePreview({ jobId, buildVolume, lineWidth = 0.4 }: {
         </button>
       </div>
       {view === '3d'
-        ? <GCodePreview3D gcode={gcode} buildVolume={buildVolume} lineWidth={lineWidth} className="flex-1 min-h-0" />
+        ? <GCodePreview3D gcode={gcode} buildVolume={buildVolume} lineWidth={lineWidth} className="flex-1 min-h-0"
+            travelX={travelX} travelY={travelY} travelZ={travelZ} originX={originX} originY={originY} beds={beds} />
         : <GCodeLayerViewer gcode={gcode} />
       }
     </div>

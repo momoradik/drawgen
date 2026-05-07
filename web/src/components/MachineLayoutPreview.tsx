@@ -35,6 +35,7 @@ interface Props {
   onOriginChange?: (x: number, y: number) => void
   onCncOffsetChange?: (x: number, y: number) => void
   onBedChange?: (bedIndex: number, x: number, y: number, w: number, d: number) => void
+  onSwapXY?: () => void
 }
 
 export default function MachineLayoutPreview({
@@ -46,7 +47,7 @@ export default function MachineLayoutPreview({
   extruderAssignments, isHybrid, cncOffsetX, cncOffsetY,
   highlight,
   onBedPositionChange, onBedSizeChange, onNozzleOffsetChange,
-  onExtruder1PositionChange, onOriginChange, onCncOffsetChange, onBedChange,
+  onExtruder1PositionChange, onOriginChange, onCncOffsetChange, onBedChange, onSwapXY,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<{
@@ -230,13 +231,22 @@ export default function MachineLayoutPreview({
 
   return (
     <div className="bg-gray-950/60 rounded-xl border border-gray-800 p-3 space-y-1">
-      <p className="text-[10px] text-gray-500 text-center">
-        {isDragging
-          ? <span className="text-green-400">Dragging — release to set position</span>
-          : hl
-            ? <span className="text-gray-300">Highlighted: <span className="text-white font-medium">{formatHighlight(hl)}</span></span>
-            : 'Drag the bed or nozzles to reposition. Drag bed edges to resize.'}
-      </p>
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-gray-500">
+          {isDragging
+            ? <span className="text-green-400">Dragging — release to set position</span>
+            : hl
+              ? <span className="text-gray-300">Highlighted: <span className="text-white font-medium">{formatHighlight(hl)}</span></span>
+              : 'Drag the bed or nozzles to reposition. Drag bed edges to resize.'}
+        </p>
+        {onSwapXY && (
+          <button
+            type="button"
+            onClick={onSwapXY}
+            className="text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border border-gray-600 transition"
+          >X ↔ Y</button>
+        )}
+      </div>
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full select-none"
         aria-label="Interactive machine layout"
         onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}>

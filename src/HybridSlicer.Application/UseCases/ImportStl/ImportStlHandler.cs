@@ -62,8 +62,21 @@ public sealed class ImportStlHandler : IRequestHandler<ImportStlCommand, ImportS
 
         ValidateStlHeader(destination);
 
+        // Deduplicate job name: append (1), (2), etc. if name already exists
+        var jobName = cmd.JobName;
+        var allJobs = await _jobs.GetAllAsync(ct);
+        var existingNames = new HashSet<string>(allJobs.Select(j => j.Name), StringComparer.OrdinalIgnoreCase);
+        if (existingNames.Contains(jobName))
+        {
+            for (var i = 1; ; i++)
+            {
+                var candidate = $"{jobName} ({i})";
+                if (!existingNames.Contains(candidate)) { jobName = candidate; break; }
+            }
+        }
+
         var job = PrintJob.Create(
-            cmd.JobName,
+            jobName,
             destination,
             cmd.MachineProfileId,
             cmd.PrintProfileId,

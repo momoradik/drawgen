@@ -43,6 +43,8 @@ export interface MachineProfile {
   port: number
   cncOffset: MachineOffset
   safeClearanceHeightMm: number
+  extruderAxes: string
+  cncAxes: string
   version: string
 }
 

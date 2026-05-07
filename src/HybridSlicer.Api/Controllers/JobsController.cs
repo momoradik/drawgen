@@ -17,17 +17,20 @@ public sealed class JobsController : ControllerBase
 {
     private readonly IMediator _mediator;
     private readonly IPrintJobRepository _jobs;
+    private readonly ICustomGCodeBlockRepository _customGCode;
     private readonly MultiBedMerger _merger;
     private readonly StorageOptions _storage;
 
     public JobsController(
         IMediator mediator,
         IPrintJobRepository jobs,
+        ICustomGCodeBlockRepository customGCode,
         MultiBedMerger merger,
         IOptions<StorageOptions> storage)
     {
         _mediator = mediator;
         _jobs = jobs;
+        _customGCode = customGCode;
         _merger = merger;
         _storage = storage.Value;
     }
@@ -191,9 +194,22 @@ public sealed class JobsController : ControllerBase
         // Use the first bed job as template for the merged job's profile references
         var template = jobs[0];
 
+        // Deduplicate merged job name
+        var mergedName = request.Name ?? $"{template.Name} (merged {jobs.Count} beds)";
+        var allExisting = await _jobs.GetAllAsync(ct);
+        var usedNames = new HashSet<string>(allExisting.Select(j => j.Name), StringComparer.OrdinalIgnoreCase);
+        if (usedNames.Contains(mergedName))
+        {
+            for (var i = 1; ; i++)
+            {
+                var candidate = $"{mergedName} ({i})";
+                if (!usedNames.Contains(candidate)) { mergedName = candidate; break; }
+            }
+        }
+
         // Create a real merged job
         var mergedJob = Domain.Entities.PrintJob.Create(
-            name: request.Name ?? $"{template.Name} (merged {jobs.Count} beds)",
+            name: mergedName,
             stlFilePath: template.StlFilePath,
             machineProfileId: template.MachineProfileId,
             printProfileId: template.PrintProfileId,
@@ -207,19 +223,68 @@ public sealed class JobsController : ControllerBase
         var outputPath = Path.Combine(jobDir, "print.gcode");
 
         var bedPaths = jobs.Select(j => j.PrintGCodePath!).ToList();
-        await _merger.MergeAsync(bedPaths, outputPath, request.LayerStep, ct);
 
-        // Also merge CNC toolpath files if they exist
+        // Hybrid mode: automatically generate CNC toolpaths for each bed job
+        if (request.Hybrid && request.CncToolId.HasValue)
+        {
+            for (var i = 0; i < jobs.Count; i++)
+            {
+                var bedJob = jobs[i];
+                // Skip if this bed already has toolpaths generated
+                if (bedJob.ToolpathGCodePath is not null && System.IO.File.Exists(bedJob.ToolpathGCodePath))
+                    continue;
+
+                await _mediator.Send(new GenerateToolpathsCommand(
+                    bedJob.Id,
+                    request.CncToolId.Value,
+                    request.MachineEveryNLayers,
+                    request.MachineInnerWalls,
+                    request.AvoidSupports,
+                    request.SupportClearanceMm,
+                    request.AutoMachiningFrequency,
+                    request.ZSafetyOffsetMm,
+                    request.SpindleRpmOverride), ct);
+
+                // Re-read the job to get the updated toolpath path
+                var updated = await _jobs.GetByIdAsync(bedJob.Id, ct);
+                if (updated is not null)
+                    jobs[i] = updated;
+            }
+        }
+
         var cncPaths = jobs.Where(j => j.ToolpathGCodePath is not null && System.IO.File.Exists(j.ToolpathGCodePath))
             .Select(j => j.ToolpathGCodePath!).ToList();
         string? mergedToolpathPath = null;
-        if (cncPaths.Count > 0)
+
+        string? hybridOutputPath = null;
+
+        if (request.Hybrid && cncPaths.Count > 0)
         {
-            mergedToolpathPath = Path.Combine(jobDir, "toolpath.gcode");
-            await _merger.MergeAsync(cncPaths, mergedToolpathPath, request.LayerStep, ct);
+            // Hybrid merge: one file with print + CNC interleaved per interval
+            // Sequence: print N on each bed → CNC N on each bed → repeat
+            hybridOutputPath = Path.Combine(jobDir, "hybrid.gcode");
+
+            // Load custom G-code blocks for injection at each interval
+            var customBlocks = await BuildCustomBlocksAsync(ct);
+            await _merger.MergeHybridAsync(bedPaths, cncPaths, request.LayerStep, hybridOutputPath, customBlocks, ct);
+
+            // Also write the print-only merge for preview compatibility
+            await _merger.MergeAsync(bedPaths, outputPath, request.LayerStep, ct);
+        }
+        else
+        {
+            // Print-only merge: interleave print layers across beds
+            await _merger.MergeAsync(bedPaths, outputPath, request.LayerStep, ct);
+
+            // Also merge CNC toolpath files separately if they exist
+            if (cncPaths.Count > 0)
+            {
+                mergedToolpathPath = Path.Combine(jobDir, "toolpath.gcode");
+                await _merger.MergeCncAsync(cncPaths, mergedToolpathPath, request.LayerStep, ct);
+            }
         }
 
-        // Count total layers from merged output
+        // Count total layers from merged print output
         var totalLayers = 0;
         foreach (var line in await System.IO.File.ReadAllLinesAsync(outputPath, ct))
             if (line.StartsWith(";LAYER:")) totalLayers++;
@@ -227,7 +292,21 @@ public sealed class JobsController : ControllerBase
         // Mark the merged job as sliced (so it appears in Dashboard, Hybrid Planner, Preview)
         mergedJob.MarkSlicing();
         mergedJob.MarkSlicingComplete(outputPath, Math.Max(totalLayers, 1));
-        if (mergedToolpathPath is not null)
+
+        if (hybridOutputPath is not null)
+        {
+            // Write a separate CNC-only merged toolpath for Hybrid Preview simulation
+            var mergedToolpathForPreview = Path.Combine(jobDir, "toolpath.gcode");
+            await _merger.MergeCncAsync(cncPaths, mergedToolpathForPreview, request.LayerStep, ct);
+
+            // ToolpathGCodePath = CNC-only merge (for preview/simulation parsing)
+            // HybridGCodePath   = combined print+CNC interleaved (for download/execution)
+            mergedJob.MarkGeneratingToolpaths();
+            mergedJob.MarkToolpathsComplete(mergedToolpathForPreview);
+            mergedJob.MarkPlanningHybrid();
+            mergedJob.MarkReady(hybridOutputPath);
+        }
+        else if (mergedToolpathPath is not null)
         {
             mergedJob.MarkGeneratingToolpaths();
             mergedJob.MarkToolpathsComplete(mergedToolpathPath);
@@ -243,6 +322,25 @@ public sealed class JobsController : ControllerBase
             layerStep = request.LayerStep,
             totalLayers,
         });
+    }
+
+    private async Task<MultiBedMerger.CustomBlocks> BuildCustomBlocksAsync(CancellationToken ct)
+    {
+        var enabled = await _customGCode.GetEnabledAsync(ct);
+        string collect(Domain.Enums.GCodeTrigger trigger) =>
+            string.Join("\n", enabled
+                .Where(b => b.Trigger == trigger)
+                .OrderBy(b => b.SortOrder)
+                .Select(b => b.GCodeContent));
+        return new MultiBedMerger.CustomBlocks
+        {
+            BeforePrinting = collect(Domain.Enums.GCodeTrigger.BeforePrinting),
+            AfterPrinting = collect(Domain.Enums.GCodeTrigger.AfterPrinting),
+            BeforeMachining = collect(Domain.Enums.GCodeTrigger.BeforeMachining),
+            AfterMachining = collect(Domain.Enums.GCodeTrigger.AfterMachining),
+            JobStart = collect(Domain.Enums.GCodeTrigger.JobStart),
+            JobEnd = collect(Domain.Enums.GCodeTrigger.JobEnd),
+        };
     }
 
     [HttpDelete("{id:guid}")]
@@ -297,4 +395,17 @@ public record GenerateToolpathsRequest(
     double SpindleEndY              = 0.0,
     double? SpindleEndZ             = null);
 public record PlanHybridRequest(int MachineEveryNLayers);
-public record MergeBedsRequest(IReadOnlyList<Guid> JobIds, int LayerStep = 1, string? Name = null);
+public record MergeBedsRequest(
+    IReadOnlyList<Guid> JobIds,
+    int    LayerStep              = 1,
+    string? Name                  = null,
+    bool   Hybrid                 = false,
+    // CNC parameters — only used when Hybrid = true
+    Guid?  CncToolId              = null,
+    int    MachineEveryNLayers    = 10,
+    bool   MachineInnerWalls      = false,
+    bool   AvoidSupports          = false,
+    double SupportClearanceMm     = 2.0,
+    bool   AutoMachiningFrequency = false,
+    double ZSafetyOffsetMm        = 0.0,
+    int?   SpindleRpmOverride     = null);

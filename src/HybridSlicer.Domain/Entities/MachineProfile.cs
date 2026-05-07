@@ -80,6 +80,24 @@ public class MachineProfile
     // Rapid travel clearance height above part for CNC moves
     public double SafeClearanceHeightMm { get; private set; } = 5.0;
 
+    // Axis naming: allows remapping G-code axis letters per component.
+    // Default is "XYZ" for everything. E.g. CNC could be "UVW".
+    // Stored as 3-char strings. Only the letter changes in G-code output.
+    public string ExtruderAxes { get; private set; } = "XYZ";
+    public string CncAxes { get; private set; } = "XYZ";
+
+    public void SetExtruderAxes(string axes)
+    {
+        ExtruderAxes = (axes?.Length >= 3 ? axes[..3] : axes?.PadRight(3, 'Z') ?? "XYZ").ToUpperInvariant();
+        Touch();
+    }
+
+    public void SetCncAxes(string axes)
+    {
+        CncAxes = (axes?.Length >= 3 ? axes[..3] : axes?.PadRight(3, 'Z') ?? "XYZ").ToUpperInvariant();
+        Touch();
+    }
+
     // Versioning / audit
     public string Version { get; private set; } = "1.0";
     public DateTime CreatedAt { get; private set; }

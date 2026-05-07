@@ -9,7 +9,7 @@ const allNavItems = [
   { to: '/machine-config',    label: 'Machine Configuration', icon: '⚙️', devOnly: false },
   { to: '/materials',         label: 'Materials',      icon: '🧵', devOnly: false },
   { to: '/tools',             label: 'Tool Library',   icon: '🔧', devOnly: false },
-  { to: '/hybrid-planner',    label: 'Hybrid Planner', icon: '🔀', devOnly: false },
+  { to: '/hybrid-planner',    label: 'CNC Polishing', icon: '🔀', devOnly: false },
   { to: '/hybrid-preview',    label: 'Hybrid Preview', icon: '🎬', devOnly: false },
   { to: '/custom-gcode',      label: 'G-code Customisation', icon: '📝', devOnly: false },
   { to: '/calibration',       label: 'Calibration',    icon: '📐', devOnly: false },

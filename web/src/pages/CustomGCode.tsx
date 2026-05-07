@@ -4,20 +4,20 @@ import { customGCodeApi, machineProfilesApi, jobsApi } from '../api/client'
 import DisabledHint from '../components/DisabledHint'
 import type { CustomGCodeBlock, GCodeTrigger, PrintJob } from '../types'
 
-const BASE_TRIGGERS: { value: GCodeTrigger; label: string }[] = [
-  { value: 'JobStart',         label: 'Job Start' },
-  { value: 'JobEnd',           label: 'Job End' },
-  { value: 'BeforePrinting',   label: 'Before Printing' },
-  { value: 'AfterPrinting',    label: 'After Printing' },
-  { value: 'BeforeMachining',  label: 'Before Machining' },
-  { value: 'AfterMachining',   label: 'After Machining' },
+const BASE_TRIGGERS: { value: GCodeTrigger; label: string; hint: string }[] = [
+  { value: 'JobStart',         label: 'Job Start',          hint: 'Replaces default Cura header (temps, homing). Runs once at the start.' },
+  { value: 'JobEnd',           label: 'Job End',            hint: 'Replaces default Cura footer. Runs once at the end.' },
+  { value: 'BeforePrinting',   label: 'Before Printing',    hint: 'Runs before every print phase (every N-layer interval).' },
+  { value: 'AfterPrinting',    label: 'After Printing',     hint: 'Runs after every print phase (every N-layer interval).' },
+  { value: 'BeforeMachining',  label: 'Before Machining',   hint: 'Runs before every CNC phase (every N-layer interval).' },
+  { value: 'AfterMachining',   label: 'After Machining',    hint: 'Runs after every CNC phase (every N-layer interval).' },
 ]
 
-function buildExtruderTriggers(extruderCount: number): { value: GCodeTrigger; label: string }[] {
-  const result: { value: GCodeTrigger; label: string }[] = []
+function buildExtruderTriggers(extruderCount: number): { value: GCodeTrigger; label: string; hint: string }[] {
+  const result: { value: GCodeTrigger; label: string; hint: string }[] = []
   for (let i = 0; i < Math.min(extruderCount, 8); i++) {
-    result.push({ value: `BeforeExtruder${i}` as GCodeTrigger, label: `Before Extruder ${i + 1}` })
-    result.push({ value: `AfterExtruder${i}` as GCodeTrigger, label: `After Extruder ${i + 1}` })
+    result.push({ value: `BeforeExtruder${i}` as GCodeTrigger, label: `Before Extruder ${i + 1}`, hint: `Runs before switching to extruder ${i + 1}.` })
+    result.push({ value: `AfterExtruder${i}` as GCodeTrigger, label: `After Extruder ${i + 1}`, hint: `Runs after extruder ${i + 1} finishes.` })
   }
   return result
 }
@@ -102,7 +102,7 @@ export default function CustomGCode() {
     ['SlicingComplete', 'ToolpathsComplete', 'Ready'].includes(j.status))
 
   // Blocks that match the selected job (tagged in description)
-  const jobBlocks = blocks.filter(b => b.description?.includes(selectedJobId) && selectedJobId)
+  const jobBlocks = blocks.filter(b => b.isEnabled)
 
   return (
     <div className="space-y-6">
@@ -206,6 +206,9 @@ export default function CustomGCode() {
                   onChange={e => setJobTrigger(e.target.value as GCodeTrigger)}>
                   {allTriggers.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
+                <p className="text-[10px] text-gray-500 mt-1">
+                  {allTriggers.find(t => t.value === jobTrigger)?.hint}
+                </p>
               </div>
 
               <div className="space-y-1">
@@ -234,8 +237,9 @@ export default function CustomGCode() {
             {/* Right: existing blocks for this job */}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-3">
               <h3 className="text-sm font-semibold text-white">
-                Blocks for {completedJobs.find((j: PrintJob) => j.id === selectedJobId)?.name ?? 'selected job'}
+                Active G-code Blocks
               </h3>
+              <p className="text-[10px] text-gray-500">These blocks will be injected into all hybrid G-code output.</p>
               {selectedJobId ? (
                 jobBlocks.length > 0 ? (
                   <div className="space-y-2">
@@ -259,7 +263,7 @@ export default function CustomGCode() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-gray-600 text-xs py-4 text-center">No custom blocks for this job yet.</p>
+                  <p className="text-gray-600 text-xs py-4 text-center">No enabled G-code blocks. Create one above or enable blocks in the Blocks tab.</p>
                 )
               ) : (
                 <p className="text-gray-600 text-xs py-4 text-center">Select a job to see its custom blocks.</p>

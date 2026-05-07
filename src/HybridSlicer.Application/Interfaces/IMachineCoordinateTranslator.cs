@@ -10,4 +10,6 @@ namespace HybridSlicer.Application.Interfaces;
 public interface IMachineCoordinateTranslator
 {
     Task TranslateAsync(string gcodePath, MachineProfile machine, CancellationToken ct = default);
+    Task TranslateAsync(string gcodePath, MachineProfile machine, int? bedIndex, CancellationToken ct = default);
+    Task RemapAxesAsync(string gcodePath, string axes, CancellationToken ct = default);
 }

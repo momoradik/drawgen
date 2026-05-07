@@ -46,12 +46,25 @@ public static class DbSeeder
         var profile = MachineProfile.Create(
             name:           "Default Hybrid Machine",
             type:           MachineType.Hybrid,
-            bedWidth:       440,
-            bedDepth:       290,
+            bedWidth:       177.5,
+            bedDepth:       160.5,
             bedHeight:      350,
             extruderCount:  1);
 
+        profile.SetTravel(177.5, 160.5, 350);
+        profile.SetOriginMode(Domain.ValueObjects.OriginMode.BedCenter);
+        profile.SetBedPosition(22.6, 74);
+        profile.SetOrigin(218.9, 290);
+        profile.SetBedEdgeOffsets(left: 227.5, right: 0, front: 37, back: 0);
         profile.SetNetworkEndpoint("192.168.1.100", 8080);
+        profile.UpdateCncOffset(new Domain.ValueObjects.MachineOffset(1, -71.9, 0, 0));
+
+        // Multi-bed: 2 beds
+        profile.SetBeds(new[]
+        {
+            new Domain.ValueObjects.BedDefinition(0, 177.5, 160.5, 350, 22.6, 74),
+            new Domain.ValueObjects.BedDefinition(1, 177.5, 160.5, 350, 231.9, 70.9),
+        });
 
         await db.MachineProfiles.AddAsync(profile);
         await db.SaveChangesAsync();

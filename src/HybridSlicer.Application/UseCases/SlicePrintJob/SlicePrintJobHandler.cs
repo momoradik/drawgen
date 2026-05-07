@@ -120,7 +120,8 @@ public sealed class SlicePrintJobHandler : IRequestHandler<SlicePrintJobCommand,
 
             // Final step: translate from bed-centre coordinates to real machine coordinates
             // using origin and bed position from the machine profile. No-op if origin = bed centre.
-            await _coordTranslator.TranslateAsync(result.GCodeFilePath, machine, ct);
+            await _coordTranslator.TranslateAsync(result.GCodeFilePath, machine, job.BedIndex, ct);
+            await _coordTranslator.RemapAxesAsync(result.GCodeFilePath, machine.ExtruderAxes, ct);
 
             job.MarkSlicingComplete(result.GCodeFilePath, result.TotalLayers);
             await _jobs.UpdateAsync(job, ct);

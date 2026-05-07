@@ -68,21 +68,6 @@ export default function HybridPlanner() {
     },
   })
 
-  const planMutation = useMutation({
-    mutationFn: () => jobsApi.planHybrid(jobId, machineEveryN),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['jobs'] }),
-  })
-
-  const downloadGCode = async () => {
-    const blob = await jobsApi.downloadGCode(jobId)
-    const url  = URL.createObjectURL(blob)
-    const a    = document.createElement('a')
-    a.href     = url
-    a.download = `hybrid_${jobId}.gcode`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-
   // Build volume from the selected job's machine profile
   const selectedMachine = machines.find(m => m.id === selectedJob?.machineProfileId)
   const buildVolume = useMemo(() => ({
@@ -93,7 +78,7 @@ export default function HybridPlanner() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-semibold text-white">Hybrid Planner</h2>
+      <h2 className="text-2xl font-semibold text-white">CNC Polishing</h2>
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-800">
@@ -385,21 +370,10 @@ export default function HybridPlanner() {
                   disabled={!jobId || !toolId || toolpathsMutation.isPending}
                   className="flex-1 py-2 bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white rounded-lg text-sm transition"
                 >
-                  {toolpathsMutation.isPending ? 'Generating…' : '1. Generate Toolpaths'}
+                  {toolpathsMutation.isPending ? 'Generating…' : 'Generate CNC Toolpaths'}
                 </button>
               </DisabledHint>
 
-              <DisabledHint when={!jobId || (selectedJob?.status !== 'ToolpathsComplete' && selectedJob?.status !== 'Ready')} reason={
-                !jobId ? 'Select a job first.' : 'Generate toolpaths first (step 1), then plan hybrid.'
-              }>
-                <button
-                  onClick={() => planMutation.mutate()}
-                  disabled={!jobId || (selectedJob?.status !== 'ToolpathsComplete' && selectedJob?.status !== 'Ready') || planMutation.isPending}
-                  className="flex-1 py-2 bg-primary/80 hover:bg-primary disabled:opacity-40 text-white rounded-lg text-sm transition"
-                >
-                  {planMutation.isPending ? 'Planning…' : '2. Plan Hybrid'}
-                </button>
-              </DisabledHint>
             </div>
 
             {toolpathsMutation.isError && (
@@ -424,15 +398,6 @@ export default function HybridPlanner() {
                   Check: tool diameter vs. feature width · flute length vs. part height · tool length vs. machine Z travel · support clearance settings.
                 </div>
               </div>
-            )}
-
-            {selectedJob?.status === 'Ready' && (
-              <button
-                onClick={downloadGCode}
-                className="w-full py-2 bg-green-700 hover:bg-green-600 text-white rounded-lg text-sm transition"
-              >
-                Download Hybrid G-code
-              </button>
             )}
 
             {toolpathsMutation.isSuccess && toolpathGCode && (

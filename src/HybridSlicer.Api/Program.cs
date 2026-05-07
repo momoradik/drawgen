@@ -81,8 +81,7 @@ try
 
         if (db.Database.IsSqlite())
         {
-            // Dev SQLite: drop and recreate on every start so the schema always matches the model.
-            await db.Database.EnsureDeletedAsync();
+            // Create the database if it doesn't exist; no-op if it already does.
             await db.Database.EnsureCreatedAsync();
         }
         else

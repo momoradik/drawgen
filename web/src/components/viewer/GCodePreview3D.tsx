@@ -3,11 +3,25 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { BuildVolume } from './StlViewer'
 
+interface BedInfo {
+  index: number
+  widthMm: number
+  depthMm: number
+  positionXMm: number
+  positionYMm: number
+}
+
 interface Props {
   gcode: string
   buildVolume: BuildVolume
   lineWidth?: number
   className?: string
+  travelX?: number
+  travelY?: number
+  travelZ?: number
+  originX?: number
+  originY?: number
+  beds?: BedInfo[]
 }
 
 const MODEL_COLOR   = 0x1e40af
@@ -91,7 +105,7 @@ function makeMesh(
   return mesh
 }
 
-export default function GCodePreview3D({ gcode, buildVolume, lineWidth = 0.4, className }: Props) {
+export default function GCodePreview3D({ gcode, buildVolume, lineWidth = 0.4, className, travelX, travelY, travelZ, originX, originY, beds }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mountRef     = useRef<HTMLDivElement>(null)
 
@@ -156,17 +170,76 @@ export default function GCodePreview3D({ gcode, buildVolume, lineWidth = 0.4, cl
     controls.dampingFactor = 0.1
     controlsRef.current = controls
 
-    // ── Bed outline ───────────────────────────────────────────────────────
+    // ── Machine environment ────────────────────────────────────────────────
     const bw = buildVolume.width, bd = buildVolume.depth
-    const hw = bw / 2, hd = bd / 2
-    const bedPts = [
-      new THREE.Vector3(-hw,0,-hd), new THREE.Vector3(hw,0,-hd),
-      new THREE.Vector3(hw,0,-hd),  new THREE.Vector3(hw,0,hd),
-      new THREE.Vector3(hw,0,hd),   new THREE.Vector3(-hw,0,hd),
-      new THREE.Vector3(-hw,0,hd),  new THREE.Vector3(-hw,0,-hd),
-    ]
-    const bedGeo = new THREE.BufferGeometry().setFromPoints(bedPts)
-    scene.add(new THREE.LineSegments(bedGeo, new THREE.LineBasicMaterial({ color: 0x334155 })))
+    const hasMachineEnv = beds && beds.length > 0
+    const ox = originX ?? 0, oy = originY ?? 0
+    const tx = travelX ?? bw, ty = travelY ?? bd, tz = travelZ ?? 350
+
+    if (hasMachineEnv) {
+      // Travel envelope wireframe
+      const envGeo = new THREE.BoxGeometry(tx, tz, ty)
+      const envWire = new THREE.LineSegments(
+        new THREE.EdgesGeometry(envGeo),
+        new THREE.LineBasicMaterial({ color: 0x333355, transparent: true, opacity: 0.4 }),
+      )
+      envWire.position.set(-ox + tx / 2, tz / 2, -oy + ty / 2)
+      scene.add(envWire)
+
+      // Floor grid
+      const gridSize = Math.max(tx, ty)
+      const grid = new THREE.GridHelper(gridSize, Math.round(gridSize / 20), 0x222233, 0x1a1a2e)
+      grid.position.set(-ox + tx / 2, 0, -oy + ty / 2)
+      scene.add(grid)
+
+      // Per-bed plates and corner markers
+      const bedColors = [0x3366cc, 0x33aa55, 0xcc5533, 0xaaaa33]
+      const edgeColors = [0x5588ee, 0x55cc77, 0xee7755, 0xcccc55]
+      for (const bed of beds) {
+        const bc = bedColors[bed.index % bedColors.length]
+        const ec = edgeColors[bed.index % edgeColors.length]
+        const bcx = bed.positionXMm + bed.widthMm / 2 - ox
+        const bcy = bed.positionYMm + bed.depthMm / 2 - oy
+
+        const bGeo = new THREE.PlaneGeometry(bed.widthMm, bed.depthMm)
+        bGeo.rotateX(-Math.PI / 2)
+        scene.add(new THREE.Mesh(bGeo, new THREE.MeshPhongMaterial({ color: bc, side: THREE.DoubleSide, transparent: true, opacity: 0.15 })).translateX(bcx).translateY(0.05).translateZ(bcy))
+
+        const outlineGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bed.widthMm, bed.depthMm))
+        const outline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: ec }))
+        outline.rotateX(-Math.PI / 2)
+        outline.position.set(bcx, 0.1, bcy)
+        scene.add(outline)
+
+        // Corner marker
+        const cx = bed.positionXMm - ox + 2, cz = bed.positionYMm - oy + 2
+        const marker = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 8, 12), new THREE.MeshPhongMaterial({ color: ec }))
+        marker.position.set(cx, 4, cz)
+        scene.add(marker)
+
+        // Number disc
+        const dc = document.createElement('canvas')
+        dc.width = 64; dc.height = 64
+        const dCtx = dc.getContext('2d')!
+        dCtx.beginPath(); dCtx.arc(32, 32, 30, 0, Math.PI * 2)
+        dCtx.fillStyle = `#${ec.toString(16).padStart(6, '0')}`; dCtx.fill()
+        dCtx.fillStyle = '#fff'; dCtx.font = 'bold 38px sans-serif'; dCtx.textAlign = 'center'; dCtx.textBaseline = 'middle'
+        dCtx.fillText(`${bed.index + 1}`, 32, 33)
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(dc), transparent: true }))
+        sprite.scale.set(5, 5, 1); sprite.position.set(cx, 11, cz)
+        scene.add(sprite)
+      }
+    } else {
+      // Simple bed outline (single bed, no machine info)
+      const hw = bw / 2, hd = bd / 2
+      const bedPts = [
+        new THREE.Vector3(-hw,0,-hd), new THREE.Vector3(hw,0,-hd),
+        new THREE.Vector3(hw,0,-hd),  new THREE.Vector3(hw,0,hd),
+        new THREE.Vector3(hw,0,hd),   new THREE.Vector3(-hw,0,hd),
+        new THREE.Vector3(-hw,0,hd),  new THREE.Vector3(-hw,0,-hd),
+      ]
+      scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(bedPts), new THREE.LineBasicMaterial({ color: 0x334155 })))
+    }
 
     // ── Build meshes for ALL segments ─────────────────────────────────────
     const cylGeo = new THREE.CylinderGeometry(lineWidth / 2, lineWidth / 2, 1, BEAD_SEGS)
@@ -221,7 +294,6 @@ export default function GCodePreview3D({ gcode, buildVolume, lineWidth = 0.4, cl
       cylGeo.dispose()
       modelMesh.material instanceof THREE.Material && modelMesh.material.dispose()
       supportMesh.material instanceof THREE.Material && supportMesh.material.dispose()
-      bedGeo.dispose()
       renderer.dispose()
       if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement)
       sceneRef.current    = null

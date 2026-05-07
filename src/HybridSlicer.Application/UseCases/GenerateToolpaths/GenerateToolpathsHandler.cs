@@ -454,12 +454,15 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     }
                 }
 
+                // Use full machine travel for envelope check, not just bed dimensions.
+                // CNC coordinates have the CNC offset applied, so they extend beyond the bed area.
+                // The valid range is the full travel envelope relative to the origin.
                 var safetyReq = new SafetyValidationRequest(
                     CncGCode:              combinedGCode,
                     PrintedGeometryBounds: printedBounds,
-                    MachineMaxX:           machine.BedWidthMm,
-                    MachineMaxY:           machine.BedDepthMm,
-                    MachineMaxZ:           machine.BedHeightMm,
+                    MachineMaxX:           machine.TravelXMm,
+                    MachineMaxY:           machine.TravelYMm,
+                    MachineMaxZ:           machine.TravelZMm > 0 ? machine.TravelZMm : machine.BedHeightMm,
                     SafeClearanceHeightMm: machine.SafeClearanceHeightMm,
                     ToolRadiusMm:          tool.RadiusMm,
                     ToolLengthMm:          tool.ToolLengthMm);
@@ -499,7 +502,8 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
 
             // Translate CNC toolpath to machine coordinates (same translation as print G-code)
             // so both files are in the same coordinate frame when merged into hybrid output.
-            await _coordTranslator.TranslateAsync(toolpathGCodePath, machine, ct);
+            await _coordTranslator.TranslateAsync(toolpathGCodePath, machine, job.BedIndex, ct);
+            await _coordTranslator.RemapAxesAsync(toolpathGCodePath, machine.CncAxes, ct);
 
             job.MarkToolpathsComplete(toolpathGCodePath);
             await _jobs.UpdateAsync(job, ct);

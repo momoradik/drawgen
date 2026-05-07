@@ -34,12 +34,12 @@ export function useMachineConnection() {
     return conn
   }, [setMachineConnected, setTemperatures])
 
-  const connect = useCallback(async (host: string, port: number) => {
+  const connect = useCallback(async (host: string, port: number, password?: string) => {
     if (!connectionRef.current) {
       connectionRef.current = buildConnection()
       await connectionRef.current.start()
     }
-    await connectionRef.current.invoke('Connect', host, port)
+    await connectionRef.current.invoke('Connect', host, port, password ?? '')
   }, [buildConnection])
 
   const disconnect = useCallback(async () => {

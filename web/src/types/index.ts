@@ -45,6 +45,8 @@ export interface MachineProfile {
   safeClearanceHeightMm: number
   extruderAxes: string
   cncAxes: string
+  motionAssignmentEnabled: boolean
+  motionAssignmentJson: string
   version: string
 }
 

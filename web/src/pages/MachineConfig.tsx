@@ -47,6 +47,10 @@ interface MachineForm {
   cncOffsetRot: number
   extruderAxes: string
   cncAxes: string
+  motionAssignmentEnabled: boolean
+  motionExtruder: string  // axes the extruder moves on, e.g. "YZ"
+  motionCnc: string       // axes the CNC moves on, e.g. "YZ"
+  motionBeds: string[]    // per-bed: axes each bed moves on, e.g. ["X", "X"]
 }
 
 function parseJsonArray(json: string | undefined): number[] {
@@ -105,6 +109,17 @@ function machineToForm(m: MachineProfile): MachineForm {
     cncOffsetRot: m.cncOffset?.rotationDeg ?? 0,
     extruderAxes: m.extruderAxes ?? 'XYZ',
     cncAxes: m.cncAxes ?? 'XYZ',
+    motionAssignmentEnabled: m.motionAssignmentEnabled ?? false,
+    ...(() => {
+      try {
+        const ma = JSON.parse(m.motionAssignmentJson || '{}')
+        return {
+          motionExtruder: ma.extruder ?? 'XYZ',
+          motionCnc: ma.cnc ?? 'XYZ',
+          motionBeds: ma.beds ?? [],
+        }
+      } catch { return { motionExtruder: 'XYZ', motionCnc: 'XYZ', motionBeds: [] as string[] } }
+    })(),
   }
 }
 
@@ -141,6 +156,10 @@ function emptyForm(): MachineForm {
     cncOffsetRot: 0,
     extruderAxes: 'XYZ',
     cncAxes: 'XYZ',
+    motionAssignmentEnabled: false,
+    motionExtruder: 'XYZ',
+    motionCnc: 'XYZ',
+    motionBeds: [],
   }
 }
 
@@ -237,6 +256,12 @@ export default function MachineConfig() {
       ipAddress: form.ipAddress || undefined, port: form.port,
       cncOffset: { x: form.cncOffsetX, y: form.cncOffsetY, z: form.cncOffsetZ, rotationDeg: form.cncOffsetRot },
       extruderAxes: form.extruderAxes, cncAxes: form.cncAxes,
+      motionAssignmentEnabled: form.motionAssignmentEnabled,
+      motionAssignmentJson: JSON.stringify({
+        extruder: form.motionExtruder,
+        cnc: form.motionCnc,
+        beds: form.motionBeds,
+      }),
     }
     if (editingId) updateMutation.mutate({ id: editingId, data: payload })
     else createMutation.mutate(payload)
@@ -677,6 +702,52 @@ export default function MachineConfig() {
                           `X→${form.cncAxes[0] ?? 'X'} Y→${form.cncAxes[1] ?? 'Y'} Z→${form.cncAxes[2] ?? 'Z'}`}
                       </p>
                     </MField>
+                  </div>
+
+                  {/* Motion Assignment for Hybrid Preview */}
+                  <div className="border-t border-gray-800 pt-3 space-y-2">
+                    <label className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                      <input type="checkbox" checked={form.motionAssignmentEnabled}
+                        onChange={e => set('motionAssignmentEnabled', e.target.checked)}
+                        className="accent-primary" />
+                      Enable motion assignment (Hybrid Preview only)
+                    </label>
+                    <p className="text-[10px] text-gray-600">
+                      Define which physical component moves on which axis in the preview simulation.
+                      E.g. bed moves on X, extruder on YZ. Parts on beds move with the bed.
+                    </p>
+
+                    {form.motionAssignmentEnabled && (
+                      <div className="space-y-2 pl-2 border-l-2 border-gray-800">
+                        <MField label="Extruder moves on">
+                          <input className="input w-full font-mono uppercase" maxLength={3}
+                            value={form.motionExtruder}
+                            onChange={e => set('motionExtruder', e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3))}
+                            placeholder="XYZ" />
+                          <p className="text-[10px] text-gray-600 mt-0.5">
+                            Axes the extruder/nozzle moves on. E.g. "YZ" = extruder moves in Y and Z, bed moves in X.
+                          </p>
+                        </MField>
+                        <MField label="CNC spindle moves on">
+                          <input className="input w-full font-mono uppercase" maxLength={3}
+                            value={form.motionCnc}
+                            onChange={e => set('motionCnc', e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3))}
+                            placeholder="XYZ" />
+                        </MField>
+                        {form.beds.map((_, bi) => (
+                          <MField key={bi} label={`Bed ${bi + 1} moves on`}>
+                            <input className="input w-full font-mono uppercase" maxLength={3}
+                              value={form.motionBeds[bi] ?? ''}
+                              onChange={e => {
+                                const mb = [...form.motionBeds]
+                                mb[bi] = e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3)
+                                set('motionBeds', mb)
+                              }}
+                              placeholder="X" />
+                          </MField>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

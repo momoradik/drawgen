@@ -216,12 +216,18 @@ interface ViewerProps {
   originX?: number
   originY?: number
   beds?: BedInfo[]
+  motionAssignment?: {
+    enabled: boolean
+    extruder: string  // axes extruder moves on, e.g. "YZ"
+    cnc: string       // axes CNC moves on, e.g. "YZ"
+    beds: string[]    // per-bed axes, e.g. ["X", "X"]
+  }
 }
 
 export function HybridSimViewer({
   printGCode, cncGCode, machinedLayers, totalPrintLayers,
   layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth,
-  travelX, travelY, travelZ, originX, originY, beds
+  travelX, travelY, travelZ, originX, originY, beds, motionAssignment
 }: ViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef  = useRef<THREE.WebGLRenderer | null>(null)
@@ -260,12 +266,15 @@ export function HybridSimViewer({
   })
 
   useEffect(() => { speedRef.current = speed }, [speed])
+  const ma = motionAssignment?.enabled ? motionAssignment : null
 
   // Refs for scene objects that need to be accessed in animation / jump
   const partMeshRef    = useRef<THREE.InstancedMesh | null>(null)
   const supportMeshRef = useRef<THREE.InstancedMesh | null>(null)
   const cncRapidRef    = useRef<THREE.LineSegments | null>(null)
   const cncCutRef      = useRef<THREE.LineSegments | null>(null)
+  // Groups for motion assignment: beds + parts move together
+  const bedGroupsRef   = useRef<THREE.Group[]>([])
   const nozzleRef      = useRef<THREE.Group | null>(null)
   const toolRef        = useRef<THREE.Group | null>(null)
 
@@ -358,9 +367,19 @@ export function HybridSimViewer({
     const bedColors = [0x3366cc, 0x33aa55, 0xcc5533, 0xaaaa33]
     const edgeColors = [0x5588ee, 0x55cc77, 0xee7755, 0xcccc55]
 
+    // Create bed groups before the loop so bedParent can reference them
+    const bedGroups: THREE.Group[] = []
+    for (let i = 0; i < bedList.length; i++) {
+      const bg = new THREE.Group()
+      scene.add(bg)
+      bedGroups.push(bg)
+    }
+    bedGroupsRef.current = bedGroups
+
     for (const bed of bedList) {
       const bc = bedColors[bed.index % bedColors.length]
       const ec = edgeColors[bed.index % edgeColors.length]
+      const bedParent = ma && bed.index < bedGroups.length ? bedGroups[bed.index] : scene
 
       // Bed centre in scene coords
       const bcx = bed.positionXMm + bed.widthMm / 2 - ox
@@ -373,14 +392,14 @@ export function HybridSimViewer({
         color: bc, side: THREE.DoubleSide, transparent: true, opacity: 0.15,
       }))
       bMesh.position.set(bcx, 0.05, bcy)
-      scene.add(bMesh)
+      bedParent.add(bMesh)
 
       // Bed outline (colored border)
       const outlineGeo = new THREE.EdgesGeometry(new THREE.PlaneGeometry(bed.widthMm, bed.depthMm))
       const outline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: ec, linewidth: 2 }))
       outline.rotateX(-Math.PI / 2)
       outline.position.set(bcx, 0.1, bcy)
-      scene.add(outline)
+      bedParent.add(outline)
 
       // Corner marker — small cylinder at front-left corner
       const cornerX = bed.positionXMm - ox + 2
@@ -391,7 +410,7 @@ export function HybridSimViewer({
         new THREE.MeshPhongMaterial({ color: ec, shininess: 80 }),
       )
       marker.position.set(cornerX, markerH / 2, cornerZ)
-      scene.add(marker)
+      bedParent.add(marker)
 
       // Number disc on top of corner marker
       const discCanvas = document.createElement('canvas')
@@ -410,7 +429,7 @@ export function HybridSimViewer({
       const disc = new THREE.Sprite(new THREE.SpriteMaterial({ map: discTex, transparent: true }))
       disc.scale.set(5, 5, 1)
       disc.position.set(cornerX, markerH + 3, cornerZ)
-      scene.add(disc)
+      bedParent.add(disc)
     }
 
     // ── Two InstancedMesh objects: part (blue) and support (orange) ──────────
@@ -579,7 +598,30 @@ export function HybridSimViewer({
           const segIdx = Math.min(visCount, segs.length - 1)
           if (segIdx >= 0) {
             const s = segs[segIdx]
-            nozzleRef.current.position.set(s.x1, s.z1 + layerHeightMm, s.y1)
+            const gx = s.x1, gy = s.z1 + layerHeightMm, gz = s.y1
+            if (ma) {
+              // Split position: extruder gets its axes, beds get theirs
+              const eAxes = ma.extruder.toUpperCase()
+              nozzleRef.current.position.set(
+                eAxes.includes('X') ? gx : 0,
+                eAxes.includes('Z') ? gy : 0,
+                eAxes.includes('Y') ? gz : 0,
+              )
+              // Move all bed groups on their axes (beds carry deposited material)
+              for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
+                const bAxes = (ma.beds[bi] ?? '').toUpperCase()
+                bedGroupsRef.current[bi].position.set(
+                  bAxes.includes('X') ? gx : 0,
+                  bAxes.includes('Z') ? gy : 0,
+                  bAxes.includes('Y') ? gz : 0,
+                )
+              }
+              // Printed parts move with bed — shift instanced meshes
+              if (partMeshRef.current) partMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
+              if (supportMeshRef.current) supportMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
+            } else {
+              nozzleRef.current.position.set(gx, gy, gz)
+            }
             nozzleRef.current.visible = vis.nozzle
           }
         }
@@ -605,7 +647,27 @@ export function HybridSimViewer({
 
         if (toolRef.current && visEnd > 0 && visEnd <= moves.length) {
           const m = moves[Math.max(0, visEnd - 1)]
-          toolRef.current.position.set(m.x, m.z, m.y)
+          const gx = m.x, gy = m.z, gz = m.y
+          if (ma) {
+            const cAxes = ma.cnc.toUpperCase()
+            toolRef.current.position.set(
+              cAxes.includes('X') ? gx : 0,
+              cAxes.includes('Z') ? gy : 0,
+              cAxes.includes('Y') ? gz : 0,
+            )
+            for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
+              const bAxes = (ma.beds[bi] ?? '').toUpperCase()
+              bedGroupsRef.current[bi].position.set(
+                bAxes.includes('X') ? gx : 0,
+                bAxes.includes('Z') ? gy : 0,
+                bAxes.includes('Y') ? gz : 0,
+              )
+            }
+            if (partMeshRef.current) partMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
+            if (supportMeshRef.current) supportMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
+          } else {
+            toolRef.current.position.set(gx, gy, gz)
+          }
           toolRef.current.visible = vis.tool
         }
         if (nozzleRef.current) nozzleRef.current.visible = false
@@ -965,6 +1027,12 @@ export default function HybridPreview() {
                   }))
                 } catch { /* fall through */ }
                 return [{ index: 0, widthMm: machine.bedWidthMm, depthMm: machine.bedDepthMm, positionXMm: 0, positionYMm: 0 }]
+              })() : undefined}
+              motionAssignment={machine?.motionAssignmentEnabled ? (() => {
+                try {
+                  const ma = JSON.parse(machine.motionAssignmentJson || '{}')
+                  return { enabled: true, extruder: ma.extruder ?? 'XYZ', cnc: ma.cnc ?? 'XYZ', beds: ma.beds ?? [] }
+                } catch { return undefined }
               })() : undefined}
             />
           </div>

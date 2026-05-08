@@ -86,6 +86,14 @@ public class MachineProfile
     public string ExtruderAxes { get; private set; } = "XYZ";
     public string CncAxes { get; private set; } = "XYZ";
 
+    // Motion assignment: which physical component moves on each axis.
+    // Used in hybrid preview simulation only. Does not affect G-code.
+    // Enabled flag — when false, preview uses default (everything moves on nozzle/tool).
+    public bool MotionAssignmentEnabled { get; private set; }
+    // JSON: {"extruder":"YZ","bed1":"X","cnc":"YZ","bed1Cnc":"X"} etc.
+    // Each value is a string of axis letters that component moves on.
+    public string MotionAssignmentJson { get; private set; } = "{}";
+
     public void SetExtruderAxes(string axes)
     {
         ExtruderAxes = (axes?.Length >= 3 ? axes[..3] : axes?.PadRight(3, 'Z') ?? "XYZ").ToUpperInvariant();
@@ -95,6 +103,13 @@ public class MachineProfile
     public void SetCncAxes(string axes)
     {
         CncAxes = (axes?.Length >= 3 ? axes[..3] : axes?.PadRight(3, 'Z') ?? "XYZ").ToUpperInvariant();
+        Touch();
+    }
+
+    public void SetMotionAssignment(bool enabled, string json)
+    {
+        MotionAssignmentEnabled = enabled;
+        MotionAssignmentJson = json ?? "{}";
         Touch();
     }
 

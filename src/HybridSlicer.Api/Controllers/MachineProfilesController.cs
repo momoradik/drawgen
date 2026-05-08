@@ -78,6 +78,8 @@ public sealed class MachineProfilesController : ControllerBase
 
         if (req.ExtruderAxes is not null) profile.SetExtruderAxes(req.ExtruderAxes);
         if (req.CncAxes is not null) profile.SetCncAxes(req.CncAxes);
+        if (req.MotionAssignmentEnabled.HasValue || req.MotionAssignmentJson is not null)
+            profile.SetMotionAssignment(req.MotionAssignmentEnabled ?? false, req.MotionAssignmentJson ?? "{}");
 
         await _repo.AddAsync(profile, ct);
         return CreatedAtAction(nameof(GetById), new { id = profile.Id }, profile);
@@ -167,6 +169,8 @@ public sealed class MachineProfilesController : ControllerBase
 
         if (req.ExtruderAxes is not null) profile.SetExtruderAxes(req.ExtruderAxes);
         if (req.CncAxes is not null) profile.SetCncAxes(req.CncAxes);
+        if (req.MotionAssignmentEnabled.HasValue || req.MotionAssignmentJson is not null)
+            profile.SetMotionAssignment(req.MotionAssignmentEnabled ?? profile.MotionAssignmentEnabled, req.MotionAssignmentJson ?? profile.MotionAssignmentJson);
 
         await _repo.UpdateAsync(profile, ct);
         return Ok(profile);
@@ -227,7 +231,9 @@ public record CreateMachineProfileRequest(
     OffsetDto? CncOffset = null,
     double? SafeClearanceHeightMm = null,
     string? ExtruderAxes = null,
-    string? CncAxes = null);
+    string? CncAxes = null,
+    bool? MotionAssignmentEnabled = null,
+    string? MotionAssignmentJson = null);
 
 public record UpdateMachineProfileRequest(
     string? Name = null,
@@ -256,7 +262,9 @@ public record UpdateMachineProfileRequest(
     OffsetDto? CncOffset = null,
     double? SafeClearanceHeightMm = null,
     string? ExtruderAxes = null,
-    string? CncAxes = null);
+    string? CncAxes = null,
+    bool? MotionAssignmentEnabled = null,
+    string? MotionAssignmentJson = null);
 
 public record UpdateOffsetsRequest(
     double X, double Y, double Z, double RotationDeg,

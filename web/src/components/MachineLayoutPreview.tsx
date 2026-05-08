@@ -74,15 +74,18 @@ export default function MachineLayoutPreview({
     ? bedsProp
     : [{ index: 0, widthMm: bedWidth, depthMm: bedDepth, heightMm: 0, positionXMm: bedPositionX, positionYMm: bedPositionY }]
 
+  // Helper: flip Y so +Y = up in SVG (SVG Y increases downward)
+  const svgY = (machineY: number) => offY + usedH - machineY * scale
+
   // Primary bed (bed 1) for extruder positioning and backward compat
   const bedSvgX = offX + allBeds[0].positionXMm * scale
-  const bedSvgY = offY + allBeds[0].positionYMm * scale
+  const bedSvgY = svgY(allBeds[0].positionYMm + allBeds[0].depthMm)
   const bedSvgW = allBeds[0].widthMm * scale
   const bedSvgH = allBeds[0].depthMm * scale
 
   // Machine origin (explicit position in travel frame)
   const originSvgX = offX + originX * scale
-  const originSvgY = offY + originY * scale
+  const originSvgY = svgY(originY)
 
   // Bed center (print reference — bed 1)
   const bedCenterSvgX = bedSvgX + bedSvgW / 2
@@ -138,7 +141,7 @@ export default function MachineLayoutPreview({
     if (!d) return
     const p = svgPoint(e.clientX, e.clientY)
     const dxSvg = p.x - d.startSvgX, dySvg = p.y - d.startSvgY
-    const dxMm = dxSvg / scale, dyMm = dySvg / scale
+    const dxMm = dxSvg / scale, dyMm = -dySvg / scale
 
     if (d.type.startsWith('bedResizeR-') && onBedChange) {
       const bi = parseInt(d.type.split('-')[1])
@@ -151,7 +154,7 @@ export default function MachineLayoutPreview({
       const bi = parseInt(d.type.split('-')[1])
       const bed = allBeds[bi]
       if (bed) {
-        const nd = Math.max(10, Math.min(travelY - bed.positionYMm, d.startMmY + dyMm))
+        const nd = Math.max(10, Math.min(travelY - bed.positionYMm, d.startMmY - dyMm))
         onBedChange(bi, bed.positionXMm, bed.positionYMm, bed.widthMm, Math.round(nd * 10) / 10)
       }
     } else if (d.type.startsWith('bedResizeC-') && onBedChange) {
@@ -159,7 +162,7 @@ export default function MachineLayoutPreview({
       const bed = allBeds[bi]
       if (bed) {
         const nw = Math.max(10, Math.min(travelX - bed.positionXMm, d.startMmX + dxMm))
-        const nd = Math.max(10, Math.min(travelY - bed.positionYMm, d.startMmY + dyMm))
+        const nd = Math.max(10, Math.min(travelY - bed.positionYMm, d.startMmY - dyMm))
         onBedChange(bi, bed.positionXMm, bed.positionYMm, Math.round(nw * 10) / 10, Math.round(nd * 10) / 10)
       }
     } else if (d.type.startsWith('bed-') && onBedChange) {
@@ -178,15 +181,15 @@ export default function MachineLayoutPreview({
       const nw = Math.max(10, Math.min(travelX - bedPositionX, d.startMmX + dxMm))
       onBedSizeChange(Math.round(nw * 10) / 10, bedDepth)
     } else if (d.type === 'bedBottom' && onBedSizeChange) {
-      const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY + dyMm))
+      const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY - dyMm))
       onBedSizeChange(bedWidth, Math.round(nd * 10) / 10)
     } else if (d.type === 'bedCorner' && onBedSizeChange) {
       const nw = Math.max(10, Math.min(travelX - bedPositionX, d.startMmX + dxMm))
-      const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY + dyMm))
+      const nd = Math.max(10, Math.min(travelY - bedPositionY, d.startMmY - dyMm))
       onBedSizeChange(Math.round(nw * 10) / 10, Math.round(nd * 10) / 10)
     } else if (d.type === 'cnc' && onCncOffsetChange) {
-      const newY = d.startMmX + dxMm   // SVG horizontal = CNC Y offset
-      const newX = d.startMmY - dyMm   // SVG vertical inverted = CNC X offset
+      const newY = d.startMmX + dxMm
+      const newX = d.startMmY + dyMm
       onCncOffsetChange(Math.round(newX * 10) / 10, Math.round(newY * 10) / 10)
     } else if (d.type === 'origin' && onOriginChange) {
       const nx = Math.max(0, Math.min(travelX, d.startMmX + dxMm))
@@ -195,13 +198,13 @@ export default function MachineLayoutPreview({
     } else if (d.type === 'nozzle-0' && onExtruder1PositionChange) {
       // E1 drag changes bed-edge offsets (front/left)
       const newLeft = Math.max(0, d.startMmX + dxMm)
-      const newFront = Math.max(0, d.startMmY - dyMm) // SVG Y inverted
+      const newFront = Math.max(0, d.startMmY + dyMm)
       onExtruder1PositionChange(Math.round(newFront * 10) / 10, Math.round(newLeft * 10) / 10)
     } else if (d.type.startsWith('nozzle-') && onNozzleOffsetChange) {
       const idx = parseInt(d.type.split('-')[1])
       if (idx > 0) {
         const newY = d.startMmX + dxMm
-        const newX = d.startMmY - dyMm
+        const newX = d.startMmY + dyMm
         onNozzleOffsetChange(idx - 1, Math.round(newX * 10) / 10, Math.round(newY * 10) / 10)
       }
     }
@@ -249,7 +252,7 @@ export default function MachineLayoutPreview({
       </div>
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full select-none"
         aria-label="Interactive machine layout"
-        onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerUp}>
+        onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
 
         {/* ── Machine travel boundary ── */}
         <g opacity={opacity(['travel', 'bed'])}>
@@ -264,7 +267,7 @@ export default function MachineLayoutPreview({
         {/* ── Beds / build areas ── */}
         {allBeds.map((bed, bi) => {
           const bx = offX + bed.positionXMm * scale
-          const by = offY + bed.positionYMm * scale
+          const by = svgY(bed.positionYMm + bed.depthMm)
           const bw = bed.widthMm * scale
           const bh = bed.depthMm * scale
           const isPrimary = bi === 0
@@ -314,20 +317,20 @@ export default function MachineLayoutPreview({
         {/* ── Axis arrows ── */}
         <g opacity={opacity('origin')}>
           <line x1={originSvgX} y1={originSvgY} x2={originSvgX + 30} y2={originSvgY}
-            stroke="#22c55e" strokeWidth="1.2" markerEnd="url(#arrowG)" />
-          <text x={originSvgX + 34} y={originSvgY + 3} fill="#22c55e" fontSize="7.5"
-            fontFamily="ui-sans-serif,sans-serif">+Y</text>
-          <line x1={originSvgX} y1={originSvgY} x2={originSvgX} y2={originSvgY - 30}
             stroke="#3b82f6" strokeWidth="1.2" markerEnd="url(#arrowB)" />
-          <text x={originSvgX + 4} y={originSvgY - 32} fill="#3b82f6" fontSize="7.5"
+          <text x={originSvgX + 34} y={originSvgY + 3} fill="#3b82f6" fontSize="7.5"
             fontFamily="ui-sans-serif,sans-serif">+X</text>
+          <line x1={originSvgX} y1={originSvgY} x2={originSvgX} y2={originSvgY - 30}
+            stroke="#22c55e" strokeWidth="1.2" markerEnd="url(#arrowG)" />
+          <text x={originSvgX + 4} y={originSvgY - 32} fill="#22c55e" fontSize="7.5"
+            fontFamily="ui-sans-serif,sans-serif">+Y</text>
         </g>
         <defs>
-          <marker id="arrowG" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-            <path d="M0,0 L6,3 L0,6 Z" fill="#22c55e" />
+          <marker id="arrowB" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#3b82f6" />
           </marker>
-          <marker id="arrowB" markerWidth="6" markerHeight="6" refX="3" refY="5" orient="auto">
-            <path d="M0,6 L3,0 L6,6 Z" fill="#3b82f6" />
+          <marker id="arrowG" markerWidth="6" markerHeight="6" refX="3" refY="5" orient="auto">
+            <path d="M0,6 L3,0 L6,6 Z" fill="#22c55e" />
           </marker>
         </defs>
 

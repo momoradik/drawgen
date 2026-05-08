@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react'
+import { useRef, useCallback, useState } from 'react'
 import type { ExtruderAssignment, OriginMode, BedDef } from '../types'
 
 const NOZZLE_COLORS = ['#3b82f6', '#f97316', '#a78bfa', '#10b981', '#f43f5e', '#eab308', '#06b6d4', '#ec4899']
@@ -47,9 +47,12 @@ export default function MachineLayoutPreview({
   extruderAssignments, isHybrid, cncOffsetX, cncOffsetY,
   highlight,
   onBedPositionChange, onBedSizeChange, onNozzleOffsetChange,
-  onExtruder1PositionChange, onOriginChange, onCncOffsetChange, onBedChange, onSwapXY,
+  onExtruder1PositionChange, onOriginChange, onCncOffsetChange, onBedChange,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
+  // Pure view-only toggle — flips ONLY the +X / +Y arrow labels at the origin.
+  // Does NOT mutate any travel/bed/origin values, so the geometry never rotates.
+  const [labelSwapped, setLabelSwapped] = useState(false)
   const dragRef = useRef<{
     type: string // 'bed' | 'origin' | 'bed-N' | 'bedResizeR-N' | 'bedResizeB-N' | 'bedResizeC-N' | 'nozzle-N'
     startMmX: number; startMmY: number
@@ -242,13 +245,16 @@ export default function MachineLayoutPreview({
               ? <span className="text-gray-300">Highlighted: <span className="text-white font-medium">{formatHighlight(hl)}</span></span>
               : 'Drag the bed or nozzles to reposition. Drag bed edges to resize.'}
         </p>
-        {onSwapXY && (
-          <button
-            type="button"
-            onClick={onSwapXY}
-            className="text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border border-gray-600 transition"
-          >X ↔ Y</button>
-        )}
+        <button
+          type="button"
+          onClick={() => setLabelSwapped(v => !v)}
+          title="Flip the +X / +Y axis labels in this preview only — no machine values are changed."
+          className={`text-[10px] px-2 py-0.5 rounded border transition ${
+            labelSwapped
+              ? 'bg-blue-900/40 hover:bg-blue-900/60 text-blue-300 border-blue-700'
+              : 'bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border-gray-600'
+          }`}
+        >Swap X/Y label</button>
       </div>
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full select-none"
         aria-label="Interactive machine layout"
@@ -315,15 +321,17 @@ export default function MachineLayoutPreview({
         </g>
 
         {/* ── Axis arrows ── */}
+        {/* labelSwapped flips ONLY the +X / +Y label text. The arrows themselves
+            stay where they are so the diagram never rotates. */}
         <g opacity={opacity('origin')}>
           <line x1={originSvgX} y1={originSvgY} x2={originSvgX + 30} y2={originSvgY}
             stroke="#3b82f6" strokeWidth="1.2" markerEnd="url(#arrowB)" />
           <text x={originSvgX + 34} y={originSvgY + 3} fill="#3b82f6" fontSize="7.5"
-            fontFamily="ui-sans-serif,sans-serif">+X</text>
+            fontFamily="ui-sans-serif,sans-serif">{labelSwapped ? '+Y' : '+X'}</text>
           <line x1={originSvgX} y1={originSvgY} x2={originSvgX} y2={originSvgY - 30}
             stroke="#22c55e" strokeWidth="1.2" markerEnd="url(#arrowG)" />
           <text x={originSvgX + 4} y={originSvgY - 32} fill="#22c55e" fontSize="7.5"
-            fontFamily="ui-sans-serif,sans-serif">+Y</text>
+            fontFamily="ui-sans-serif,sans-serif">{labelSwapped ? '+X' : '+Y'}</text>
         </g>
         <defs>
           <marker id="arrowB" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">

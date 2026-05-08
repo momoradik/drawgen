@@ -51,7 +51,10 @@ public static class DbSeeder
             bedHeight:      350,
             extruderCount:  1);
 
-        profile.SetTravel(177.5, 160.5, 350);
+        // Travel must contain both bed extents AND the origin marker. Two
+        // 177.5 × 160.5 beds at (22.6, 74) and (231.9, 70.9) span up to
+        // X=409.4, Y=234.5; origin sits at (218.9, 290). Round up with margin.
+        profile.SetTravel(450, 320, 350);
         profile.SetOriginMode(Domain.ValueObjects.OriginMode.BedCenter);
         profile.SetBedPosition(22.6, 74);
         profile.SetOrigin(218.9, 290);
@@ -59,7 +62,7 @@ public static class DbSeeder
         profile.SetNetworkEndpoint("192.168.1.100", 8080);
         profile.UpdateCncOffset(new Domain.ValueObjects.MachineOffset(1, -71.9, 0, 0));
 
-        // Multi-bed: 2 beds
+        // Multi-bed: 2 beds (positions in travel frame; both fit inside the 450×320 travel).
         profile.SetBeds(new[]
         {
             new Domain.ValueObjects.BedDefinition(0, 177.5, 160.5, 350, 22.6, 74),

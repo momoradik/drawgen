@@ -170,9 +170,17 @@ function buildStages(
   return stages
 }
 
-// Speed mapping: slider 1-100 → segs/sec on log scale (~1 to ~1 000)
+// Speed mapping: slider 1-100 → segs/sec on a log scale.
+// Range expanded from [1, 1000] to [0.1, 1000] (4 orders of magnitude) so the
+// user can crawl through the simulation segment-by-segment for inspection.
+//   v=1   → 0.1  seg/s   (one segment every 10 seconds)
+//   v=50  → ~10  seg/s
+//   v=100 → 1000 seg/s
 function sliderToSegsPerSec(v: number): number {
-  return Math.round(Math.pow(10, (v / 100) * 3))
+  const segs = Math.pow(10, ((v - 1) / 99) * 4 - 1)
+  // Below 1 seg/s, return the float so very-slow stepping actually works.
+  // Above, round to integer for the on-screen indicator.
+  return segs < 1 ? Math.round(segs * 100) / 100 : Math.round(segs)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,6 +224,12 @@ interface ViewerProps {
   originX?: number
   originY?: number
   beds?: BedInfo[]
+  // Spindle position relative to nozzle on the same head (machine coords).
+  // Used to park the CNC tool over the active bed when CNC doesn't move on
+  // an axis, and to keep the nozzle / tool offset visually correct.
+  cncOffsetX?: number
+  cncOffsetY?: number
+  cncOffsetZ?: number
   motionAssignment?: {
     enabled: boolean
     extruder: string  // axes extruder moves on, e.g. "YZ"
@@ -227,7 +241,9 @@ interface ViewerProps {
 export function HybridSimViewer({
   printGCode, cncGCode, machinedLayers, totalPrintLayers,
   layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth,
-  travelX, travelY, travelZ, originX, originY, beds, motionAssignment
+  travelX, travelY, travelZ, originX, originY, beds,
+  cncOffsetX = 0, cncOffsetY = 0, cncOffsetZ: _cncOffsetZ = 0,
+  motionAssignment,
 }: ViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef  = useRef<THREE.WebGLRenderer | null>(null)
@@ -268,6 +284,32 @@ export function HybridSimViewer({
   useEffect(() => { speedRef.current = speed }, [speed])
   const ma = motionAssignment?.enabled ? motionAssignment : null
 
+  // ── Active bed and its scene-space reference centre ───────────────────────
+  // The active bed is the one the print is on (detected from G-code centroid).
+  // Its scene-space centre is the reference around which the bed slides during
+  // motion-assigned animation: when G-code = bed centre, the bed stays at its
+  // default position. That keeps every scene element (bed plate, deposited
+  // material, parked nozzle / tool) within the travel envelope and over the
+  // active bed instead of marching off to the machine corner.
+  const ox = originX ?? 0, oy = originY ?? 0
+  const bedListResolved: BedInfo[] = beds && beds.length > 0
+    ? beds
+    : [{ index: 0, widthMm: bedWidth, depthMm: bedDepth, positionXMm: 0, positionYMm: 0 }]
+  const activeBed = useMemo(() => {
+    const segs = parsed.print.segs
+    if (segs.length === 0) return bedListResolved[0]
+    let sumX = 0, sumY = 0
+    for (const s of segs) { sumX += (s.x0 + s.x1) / 2; sumY += (s.y0 + s.y1) / 2 }
+    const cx = sumX / segs.length, cy = sumY / segs.length
+    return bedListResolved.find(b =>
+      cx >= b.positionXMm && cx <= b.positionXMm + b.widthMm &&
+      cy >= b.positionYMm && cy <= b.positionYMm + b.depthMm,
+    ) ?? bedListResolved[0]
+  }, [parsed, bedListResolved])
+  const refX = activeBed.positionXMm + activeBed.widthMm / 2 - ox  // active bed centre in scene X
+  const refZ = activeBed.positionYMm + activeBed.depthMm / 2 - oy  // active bed centre in scene Z
+  const activeBedSceneIdx = bedListResolved.findIndex(b => b.index === activeBed.index)
+
   // Refs for scene objects that need to be accessed in animation / jump
   const partMeshRef    = useRef<THREE.InstancedMesh | null>(null)
   const supportMeshRef = useRef<THREE.InstancedMesh | null>(null)
@@ -301,15 +343,17 @@ export function HybridSimViewer({
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x0d0d14)
 
-    // Machine centre in scene coordinates
-    const ox = originX ?? 0, oy = originY ?? 0
+    // Machine centre in scene coordinates (ox/oy declared at component scope)
     const txVal = travelX ?? bedWidth, tyVal = travelY ?? bedDepth
     const machineCentreX = -ox + txVal / 2
     const machineCentreZ = -oy + tyVal / 2
     const viewDist = Math.max(txVal, tyVal, 200) * 1.4
 
     const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 5000)
-    camera.position.set(machineCentreX, viewDist * 0.5, machineCentreZ + viewDist * 0.8)
+    // Camera sits at low three.js Z (in front of -Y side of machine) so that
+    // +Y (G-code) → +Z (three.js) → further away → higher on screen.
+    // This matches the 2D machine-config preview convention (+Y up on screen).
+    camera.position.set(machineCentreX, viewDist * 0.5, machineCentreZ - viewDist * 0.8)
     cameraRef.current = camera
 
     const renderer = new THREE.WebGLRenderer({ antialias: true })
@@ -584,7 +628,9 @@ export function HybridSimViewer({
 
       if (stage.type === 'print') {
         const total = stage.printSegEnd - stage.printSegStart
-        const added = Math.ceil(SEGS_PER_SEC * dt)
+        // Float arithmetic — Math.ceil would round up to 1 every frame at very
+        // slow speeds, defeating the slow end of the slider.
+        const added = SEGS_PER_SEC * dt
         const np    = Math.min(progressRef.current + added / Math.max(total, 1), 1)
         progressRef.current = np
 
@@ -600,25 +646,34 @@ export function HybridSimViewer({
             const s = segs[segIdx]
             const gx = s.x1, gy = s.z1 + layerHeightMm, gz = s.y1
             if (ma) {
-              // Split position: extruder gets its axes, beds get theirs
               const eAxes = ma.extruder.toUpperCase()
+              // Nozzle: tracks G-code on its assigned axes; on axes it can't
+              // move on, parks at the active bed's centre so it visibly
+              // hovers over the bed instead of at the machine origin.
               nozzleRef.current.position.set(
-                eAxes.includes('X') ? gx : 0,
+                eAxes.includes('X') ? gx : refX,
                 eAxes.includes('Z') ? gy : 0,
-                eAxes.includes('Y') ? gz : 0,
+                eAxes.includes('Y') ? gz : refZ,
               )
-              // Move all bed groups on their axes (beds carry deposited material)
+              // Bed: slides relative to the active bed's centre so the deposit
+              // point lands at the head's parked position. With this offset,
+              // the bed swings ±half-bed-width around its default position
+              // (well within the travel envelope) instead of marching from the
+              // origin out to the bed-centre G-code coordinate.
               for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
                 const bAxes = (ma.beds[bi] ?? '').toUpperCase()
                 bedGroupsRef.current[bi].position.set(
-                  bAxes.includes('X') ? gx : 0,
-                  bAxes.includes('Z') ? gy : 0,
-                  bAxes.includes('Y') ? gz : 0,
+                  bAxes.includes('X') ? (refX - gx) : 0,
+                  bAxes.includes('Z') ? (-gy) : 0,
+                  bAxes.includes('Y') ? (refZ - gz) : 0,
                 )
               }
-              // Printed parts move with bed — shift instanced meshes
-              if (partMeshRef.current) partMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
-              if (supportMeshRef.current) supportMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
+              // Printed material rides with the active bed.
+              const activeBg = bedGroupsRef.current[activeBedSceneIdx] ?? bedGroupsRef.current[0]
+              if (activeBg) {
+                if (partMeshRef.current)    partMeshRef.current.position.copy(activeBg.position)
+                if (supportMeshRef.current) supportMeshRef.current.position.copy(activeBg.position)
+              }
             } else {
               nozzleRef.current.position.set(gx, gy, gz)
             }
@@ -632,7 +687,9 @@ export function HybridSimViewer({
 
       } else {
         const total = stage.cncMoveEnd - stage.cncMoveStart
-        const added = Math.ceil(SEGS_PER_SEC * dt)
+        // Float arithmetic — Math.ceil would round up to 1 every frame at very
+        // slow speeds, defeating the slow end of the slider.
+        const added = SEGS_PER_SEC * dt
         const np    = Math.min(progressRef.current + added / Math.max(total, 1), 1)
         progressRef.current = np
 
@@ -650,21 +707,28 @@ export function HybridSimViewer({
           const gx = m.x, gy = m.z, gz = m.y
           if (ma) {
             const cAxes = ma.cnc.toUpperCase()
+            // CNC tool: moves on its assigned axes; on others, parks at the
+            // active bed centre offset by the spindle's physical position
+            // relative to the nozzle (so the spindle is visibly over the
+            // part being machined, not stuck at the machine origin).
             toolRef.current.position.set(
-              cAxes.includes('X') ? gx : 0,
+              cAxes.includes('X') ? gx : refX + cncOffsetX,
               cAxes.includes('Z') ? gy : 0,
-              cAxes.includes('Y') ? gz : 0,
+              cAxes.includes('Y') ? gz : refZ + cncOffsetY,
             )
             for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
               const bAxes = (ma.beds[bi] ?? '').toUpperCase()
               bedGroupsRef.current[bi].position.set(
-                bAxes.includes('X') ? gx : 0,
-                bAxes.includes('Z') ? gy : 0,
-                bAxes.includes('Y') ? gz : 0,
+                bAxes.includes('X') ? (refX - gx) : 0,
+                bAxes.includes('Z') ? (-gy) : 0,
+                bAxes.includes('Y') ? (refZ - gz) : 0,
               )
             }
-            if (partMeshRef.current) partMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
-            if (supportMeshRef.current) supportMeshRef.current.position.copy(bedGroupsRef.current[0]?.position ?? new THREE.Vector3())
+            const activeBg = bedGroupsRef.current[activeBedSceneIdx] ?? bedGroupsRef.current[0]
+            if (activeBg) {
+              if (partMeshRef.current)    partMeshRef.current.position.copy(activeBg.position)
+              if (supportMeshRef.current) supportMeshRef.current.position.copy(activeBg.position)
+            }
           } else {
             toolRef.current.position.set(gx, gy, gz)
           }
@@ -1015,6 +1079,9 @@ export default function HybridPreview() {
               travelZ={machine?.bedHeightMm}
               originX={machine?.originXMm}
               originY={machine?.originYMm}
+              cncOffsetX={machine?.cncOffset?.x ?? 0}
+              cncOffsetY={machine?.cncOffset?.y ?? 0}
+              cncOffsetZ={machine?.cncOffset?.z ?? 0}
               beds={machine ? (() => {
                 try {
                   const raw = JSON.parse(machine.bedsJson || '[]') as any[]

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, Component, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { machineProfilesApi } from '../api/client'
 import DisabledHint from '../components/DisabledHint'
@@ -163,7 +163,44 @@ function emptyForm(): MachineForm {
   }
 }
 
+// ── Error boundary ────────────────────────────────────────────────────────────
+// Without this, any uncaught render error in the page or modal silently unmounts
+// the React tree and the user sees a blank page. This catches the error and
+// shows it in place so we (and the user) can actually see what broke.
+class MachineConfigErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // eslint-disable-next-line no-console
+    console.error('MachineConfig render error:', error, info)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="bg-red-950/40 border border-red-800 rounded-xl p-5 space-y-2">
+          <h3 className="text-red-300 font-semibold">Machine Configuration crashed</h3>
+          <p className="text-red-300 text-sm">{this.state.error.message}</p>
+          <pre className="text-[10px] text-red-400/70 whitespace-pre-wrap max-h-60 overflow-auto">
+            {this.state.error.stack}
+          </pre>
+          <button onClick={() => this.setState({ error: null })}
+            className="px-3 py-1 bg-red-800 hover:bg-red-700 text-white text-sm rounded">Dismiss</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 export default function MachineConfig() {
+  return (
+    <MachineConfigErrorBoundary>
+      <MachineConfigInner />
+    </MachineConfigErrorBoundary>
+  )
+}
+
+function MachineConfigInner() {
   const qc = useQueryClient()
   const { data: machines = [] } = useQuery({ queryKey: ['machines'], queryFn: machineProfilesApi.getAll })
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -329,8 +366,13 @@ export default function MachineConfig() {
       {/* Modal */}
       {form && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50"
-          onClick={e => { if (e.target === e.currentTarget) setForm(null) }}>
-          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-3xl space-y-4 max-h-[90vh] overflow-y-auto">
+          // Backdrop close requires a real double-click on the backdrop itself.
+          // A single click does nothing, so a stray click outside the dialog
+          // can never silently discard in-progress edits.
+          onDoubleClick={e => { if (e.target === e.currentTarget) setForm(null) }}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-3xl space-y-4 max-h-[90vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+            onDoubleClick={e => e.stopPropagation()}>
             <h3 className="font-semibold text-white text-lg">{editingId ? 'Edit Machine' : 'New Machine'}</h3>
 
             {/* Name */}
@@ -354,11 +396,6 @@ export default function MachineConfig() {
                   <NumInput value={form.travelZMm} min={1} max={5000} onChange={v => set('travelZMm', v)} />
                 </MField>
               </div>
-              <button
-                type="button"
-                onClick={() => setForm(f => f ? { ...f, travelXMm: f.travelYMm, travelYMm: f.travelXMm } : f)}
-                className="text-xs px-3 py-1 rounded bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 border border-gray-700 transition"
-              >X ↔ Y Travel</button>
             </div>
 
             {/* ── STEP 2: Beds ── */}
@@ -381,18 +418,7 @@ export default function MachineConfig() {
 
               {form.beds.map((bed, bi) => (
                 <div key={bi} className="bg-gray-800/30 rounded-lg p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-xs font-semibold text-gray-300">Bed {bi + 1}</p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const beds = [...form.beds]
-                        beds[bi] = { ...beds[bi], widthMm: bed.depthMm, depthMm: bed.widthMm, positionXMm: bed.positionYMm, positionYMm: bed.positionXMm }
-                        set('beds', beds)
-                      }}
-                      className="text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border border-gray-600 transition"
-                    >X ↔ Y</button>
-                  </div>
+                  <p className="text-xs font-semibold text-gray-300">Bed {bi + 1}</p>
                   <div {...hField('bed')} className="grid grid-cols-3 gap-2">
                     <MField label="Width X (mm)">
                       <NumInput value={bed.widthMm} min={1} max={form.travelXMm} onChange={v => {
@@ -425,14 +451,7 @@ export default function MachineConfig() {
                 </div>
               ))}
 
-              <div className="flex items-center justify-between mt-2">
-                <p className="text-xs text-gray-500">Machine origin (0,0) position in the travel frame.</p>
-                <button
-                  type="button"
-                  onClick={() => setForm(f => f ? { ...f, originXMm: f.originYMm, originYMm: f.originXMm } : f)}
-                  className="text-[10px] px-2 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-400 hover:text-gray-200 border border-gray-600 transition"
-                >X ↔ Y</button>
-              </div>
+              <p className="text-xs text-gray-500 mt-2">Machine origin (0,0) position in the travel frame.</p>
               <div {...hField('origin')} className="grid grid-cols-2 gap-3">
                 <MField label="Origin X (mm)">
                   <NumInput value={form.originXMm} min={0} max={5000} step={0.1}
@@ -477,24 +496,6 @@ export default function MachineConfig() {
                 isHybrid={form.type === 'Hybrid'}
                 cncOffsetX={form.cncOffsetX}
                 cncOffsetY={form.cncOffsetY}
-                onSwapXY={() => setForm(f => {
-                  if (!f) return f
-                  return {
-                    ...f,
-                    travelXMm: f.travelYMm, travelYMm: f.travelXMm,
-                    originXMm: f.originYMm, originYMm: f.originXMm,
-                    bedWidthMm: f.bedDepthMm, bedDepthMm: f.bedWidthMm,
-                    bedPositionXMm: f.bedPositionYMm, bedPositionYMm: f.bedPositionXMm,
-                    leftBedEdgeOffsetMm: f.frontBedEdgeOffsetMm, frontBedEdgeOffsetMm: f.leftBedEdgeOffsetMm,
-                    rightBedEdgeOffsetMm: f.backBedEdgeOffsetMm, backBedEdgeOffsetMm: f.rightBedEdgeOffsetMm,
-                    cncOffsetX: f.cncOffsetY, cncOffsetY: f.cncOffsetX,
-                    beds: f.beds.map(b => ({
-                      ...b,
-                      widthMm: b.depthMm, depthMm: b.widthMm,
-                      positionXMm: b.positionYMm, positionYMm: b.positionXMm,
-                    })),
-                  }
-                })}
                 onBedPositionChange={(x, y) => setForm(f => f ? { ...f, bedPositionXMm: x, bedPositionYMm: y } : f)}
                 onBedSizeChange={(w, d) => setForm(f => f ? { ...f, bedWidthMm: w, bedDepthMm: d } : f)}
                 onBedChange={(bi, x, y, w, d) => setForm(f => {

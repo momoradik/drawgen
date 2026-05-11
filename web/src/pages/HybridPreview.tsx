@@ -813,11 +813,13 @@ export function HybridSimViewer({
                   bAxes.includes('Y') ? (refZ - gz) : 0,
                 )
               }
-              // Printed material rides with the active bed.
+              // Printed material + CNC toolpaths ride with the active bed.
               const activeBg = bedGroupsRef.current[activeBedSceneIdx] ?? bedGroupsRef.current[0]
               if (activeBg) {
                 if (partMeshRef.current)    partMeshRef.current.position.copy(activeBg.position)
                 if (supportMeshRef.current) supportMeshRef.current.position.copy(activeBg.position)
+                if (cncRapidRef.current)    cncRapidRef.current.position.copy(activeBg.position)
+                if (cncCutRef.current)      cncCutRef.current.position.copy(activeBg.position)
               }
             } else {
               nozzleRef.current.position.set(gx, gy, gz)
@@ -873,6 +875,8 @@ export function HybridSimViewer({
             if (activeBg) {
               if (partMeshRef.current)    partMeshRef.current.position.copy(activeBg.position)
               if (supportMeshRef.current) supportMeshRef.current.position.copy(activeBg.position)
+              if (cncRapidRef.current)    cncRapidRef.current.position.copy(activeBg.position)
+              if (cncCutRef.current)      cncCutRef.current.position.copy(activeBg.position)
             }
           } else {
             toolRef.current.position.set(gx, gy, gz)

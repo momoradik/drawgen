@@ -859,6 +859,35 @@ function validateOffsets(f: MachineForm): OffsetIssue[] {
       issues.push({ level: 'warn', message: 'All duties assigned to the same extruder. No tool changes will occur.' })
   }
 
+  // ── Multi-bed: beds must fit within travel ─────────────────────────────
+  for (const bed of f.beds) {
+    if (bed.positionXMm + bed.widthMm > f.travelXMm)
+      issues.push({ level: 'error', message: `Bed ${bed.index + 1} extends beyond X travel (${(bed.positionXMm + bed.widthMm).toFixed(1)} > ${f.travelXMm} mm).` })
+    if (bed.positionYMm + bed.depthMm > f.travelYMm)
+      issues.push({ level: 'error', message: `Bed ${bed.index + 1} extends beyond Y travel (${(bed.positionYMm + bed.depthMm).toFixed(1)} > ${f.travelYMm} mm).` })
+  }
+
+  // ── Origin must be within travel ─────────────────────────────────────
+  if (f.originXMm > f.travelXMm)
+    issues.push({ level: 'error', message: `Origin X (${f.originXMm}) exceeds X travel (${f.travelXMm}).` })
+  if (f.originYMm > f.travelYMm)
+    issues.push({ level: 'error', message: `Origin Y (${f.originYMm}) exceeds Y travel (${f.travelYMm}).` })
+
+  // ── CNC reachability: spindle must be able to reach each bed ─────────
+  if (f.type === 'Hybrid') {
+    for (const bed of f.beds) {
+      // CNC spindle position = nozzle position + CNC offset
+      // Nozzle can reach bed centre at (bedPos + bedW/2) in travel frame
+      // CNC spindle at (bedPos + bedW/2 + cncOffsetX) must be within [0, travelX]
+      const cncX = bed.positionXMm + bed.widthMm / 2 + f.cncOffsetX
+      const cncY = bed.positionYMm + bed.depthMm / 2 + f.cncOffsetY
+      if (cncX < 0 || cncX > f.travelXMm)
+        issues.push({ level: 'warn', message: `CNC spindle cannot reach Bed ${bed.index + 1} centre in X (spindle at ${cncX.toFixed(1)} mm, travel 0–${f.travelXMm}).` })
+      if (cncY < 0 || cncY > f.travelYMm)
+        issues.push({ level: 'warn', message: `CNC spindle cannot reach Bed ${bed.index + 1} centre in Y (spindle at ${cncY.toFixed(1)} mm, travel 0–${f.travelYMm}).` })
+    }
+  }
+
   return issues
 }
 

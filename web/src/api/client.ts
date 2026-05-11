@@ -81,6 +81,9 @@ export const jobsApi = {
   downloadGCode: (id: string) =>
     http.get(`/jobs/${id}/gcode`, { responseType: 'blob' }).then(r => r.data),
 
+  getHybridGCode: (id: string) =>
+    http.get<string>(`/jobs/${id}/gcode`, { responseType: 'text' }).then(r => r.data),
+
   mergeBeds: (
     jobIds: string[], layerStep: number, name?: string,
     hybrid = false, cncParams?: {

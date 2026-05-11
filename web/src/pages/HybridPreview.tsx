@@ -133,7 +133,8 @@ function parseCncGCode(gcode: string): { moves: CncMoveSim[]; blockBoundaries: n
 
 interface PrintStage   { type: 'print';   printSegStart: number; printSegEnd: number; label: string }
 interface MachineStage { type: 'machine'; cncMoveStart: number;  cncMoveEnd: number;  label: string }
-type SimStage = PrintStage | MachineStage
+interface CustomStage  { type: 'custom';  label: string }
+type SimStage = PrintStage | MachineStage | CustomStage
 
 function buildStages(
   printLayerBoundaries: number[],
@@ -168,6 +169,137 @@ function buildStages(
     stages.push({ type: 'print', printSegStart: pStart, printSegEnd: pEnd, label: `Print L${lastPrintLayer + 1}–L${totalPrintLayers}` })
 
   return stages
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Hybrid G-code parser — reads the combined hybrid.gcode directly to produce
+// accurate stages matching the real sequence including per-bed phases, custom
+// G-code blocks, and bed switch transitions.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface HybridParsed {
+  print: ParsedPrint
+  cnc: { moves: CncMoveSim[]; blockBoundaries: number[] }
+  stages: SimStage[]
+}
+
+function parseHybridGCode(gcode: string): HybridParsed {
+  const printSegs: PrintSeg[] = []
+  const cncMoves: CncMoveSim[] = []
+  const stages: SimStage[] = []
+
+  let cx = 0, cy = 0, cz = 0, ce = 0, hasPos = false
+  let isSupport = false, layerIdx = 0, maxZ = 0
+  let mode: 'print' | 'cnc' | 'custom' | 'idle' = 'idle'
+  let currentLabel = ''
+  let stageStartPrint = 0, stageStartCnc = 0
+
+  const flushStage = () => {
+    if (mode === 'print' && printSegs.length > stageStartPrint) {
+      stages.push({ type: 'print', printSegStart: stageStartPrint, printSegEnd: printSegs.length, label: currentLabel })
+    } else if (mode === 'cnc' && cncMoves.length > stageStartCnc) {
+      stages.push({ type: 'machine', cncMoveStart: stageStartCnc, cncMoveEnd: cncMoves.length, label: currentLabel })
+    } else if (mode === 'custom') {
+      stages.push({ type: 'custom', label: currentLabel })
+    }
+  }
+
+  for (const raw of gcode.split('\n')) {
+    const t = raw.trim()
+
+    // Detect section markers from the hybrid G-code
+    if (t.startsWith('; --- PRINT Bed')) {
+      flushStage()
+      mode = 'print'
+      currentLabel = t.replace(/^;\s*---\s*/, '').replace(/\s*---\s*$/, '')
+      stageStartPrint = printSegs.length
+      continue
+    }
+    if (t.startsWith('; --- CNC Bed')) {
+      flushStage()
+      mode = 'cnc'
+      currentLabel = t.replace(/^;\s*---\s*/, '').replace(/\s*---\s*$/, '')
+      stageStartCnc = cncMoves.length
+      continue
+    }
+    if (t.startsWith('; === Custom G-code:') || t.startsWith('; === Job Start') || t.startsWith('; === Job End')) {
+      flushStage()
+      mode = 'custom'
+      currentLabel = t.replace(/^;\s*===\s*/, '').replace(/\s*===\s*$/, '')
+      continue
+    }
+    if (t.startsWith('; === End Custom') || t.startsWith('; === End Job')) {
+      flushStage()
+      mode = 'idle'
+      continue
+    }
+    if (t.startsWith('; >>> BED SWITCH:')) {
+      flushStage()
+      stages.push({ type: 'custom', label: t.replace(/^;\s*>>>\s*/, '').replace(/\s*<<<\s*$/, '') })
+      mode = 'idle'
+      continue
+    }
+    if (t.startsWith('; INTERVAL')) {
+      // Don't create a stage, just note the interval
+      continue
+    }
+
+    // Support detection
+    if (t.startsWith(';TYPE:')) {
+      isSupport = t.slice(6).toUpperCase().startsWith('SUPPORT')
+      continue
+    }
+    if (t.startsWith(';LAYER:')) { layerIdx++; continue }
+
+    // G92 E reset
+    const codePart = t.split(';')[0].trim()
+    if (!codePart) continue
+    const up = codePart.toUpperCase()
+
+    if (up.startsWith('G92')) {
+      const em = up.match(/E([+-]?[\d.]+)/)
+      if (em) ce = parseFloat(em[1])
+      continue
+    }
+
+    if (!up.startsWith('G0') && !up.startsWith('G1')) continue
+
+    const xm = up.match(/X([+-]?[\d.]+)/), ym = up.match(/Y([+-]?[\d.]+)/)
+    const zm = up.match(/Z([+-]?[\d.]+)/), em = up.match(/E([+-]?[\d.]+)/)
+    const nx = xm ? parseFloat(xm[1]) : cx
+    const ny = ym ? parseFloat(ym[1]) : cy
+    const nz = zm ? parseFloat(zm[1]) : cz
+    const ne = em ? parseFloat(em[1]) : ce
+
+    if (mode === 'print' && hasPos && em && ne > ce) {
+      printSegs.push({ x0: cx, z0: cz, y0: cy, x1: nx, z1: nz, y1: ny, layerIdx, isSupport })
+      if (nz > maxZ) maxZ = nz
+    } else if (mode === 'cnc' && hasPos) {
+      const isG0 = /^G0($|\s)/i.test(up)
+      const ddx = nx - cx, ddy = ny - cy, ddz = nz - cz
+      if (ddx * ddx + ddy * ddy + ddz * ddz > 0.0001) {
+        cncMoves.push({ x: nx, z: nz, y: ny, rapid: isG0, blockIdx: stages.length })
+      }
+    }
+
+    cx = nx; cy = ny; cz = nz; ce = ne; hasPos = true
+  }
+
+  flushStage()
+
+  // Build prefix sums for print segments
+  const partPrefix = new Int32Array(printSegs.length + 1)
+  const suppPrefix = new Int32Array(printSegs.length + 1)
+  for (let i = 0; i < printSegs.length; i++) {
+    partPrefix[i + 1] = partPrefix[i] + (printSegs[i].isSupport ? 0 : 1)
+    suppPrefix[i + 1] = suppPrefix[i] + (printSegs[i].isSupport ? 1 : 0)
+  }
+
+  return {
+    print: { segs: printSegs, layerBoundaries: [0, printSegs.length], maxZ, partPrefix, suppPrefix },
+    cnc: { moves: cncMoves, blockBoundaries: [0, cncMoves.length] },
+    stages,
+  }
 }
 
 // Speed mapping: slider 1-100 → segs/sec on a log scale.
@@ -227,6 +359,7 @@ interface ViewerProps {
   // Spindle position relative to nozzle on the same head (machine coords).
   // Used to park the CNC tool over the active bed when CNC doesn't move on
   // an axis, and to keep the nozzle / tool offset visually correct.
+  hybridGCode?: string  // combined hybrid.gcode — when provided, used for accurate staging
   cncOffsetX?: number
   cncOffsetY?: number
   cncOffsetZ?: number
@@ -242,6 +375,7 @@ export function HybridSimViewer({
   printGCode, cncGCode, machinedLayers, totalPrintLayers,
   layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth,
   travelX, travelY, travelZ, originX, originY, beds,
+  hybridGCode,
   cncOffsetX = 0, cncOffsetY = 0, cncOffsetZ: _cncOffsetZ = 0,
   motionAssignment,
 }: ViewerProps) {
@@ -258,11 +392,14 @@ export function HybridSimViewer({
   const speedRef     = useRef(1)   // slider value 1-100
 
   const parsed = useMemo(() => {
+    // Use hybrid G-code parser when available for accurate per-bed staging
+    if (hybridGCode) return parseHybridGCode(hybridGCode)
+    // Fallback: separate print + CNC files
     const print  = parsePrintGCode(printGCode)
     const cnc    = parseCncGCode(cncGCode)
     const stages = buildStages(print.layerBoundaries, cnc.blockBoundaries, machinedLayers, totalPrintLayers)
     return { print, cnc, stages }
-  }, [printGCode, cncGCode, machinedLayers, totalPrintLayers])
+  }, [printGCode, cncGCode, hybridGCode, machinedLayers, totalPrintLayers])
 
   const [stageIdx,      setStageIdx]      = useState(0)
   const [isPlaying,     setIsPlaying]     = useState(false)
@@ -626,6 +763,14 @@ export function HybridSimViewer({
       const stage = stages[si]
       const SEGS_PER_SEC = sliderToSegsPerSec(speedRef.current)
 
+      // Custom stages (bed switches, custom G-code blocks) — auto-advance
+      if (stage.type === 'custom') {
+        stageIdxRef.current = si + 1; progressRef.current = 0
+        setStageIdx(si + 1); setStageProgress(0)
+        tickFrameRef.current = requestAnimationFrame(tick)
+        return
+      }
+
       if (stage.type === 'print') {
         const total = stage.printSegEnd - stage.printSegStart
         // Float arithmetic — Math.ceil would round up to 1 every frame at very
@@ -894,6 +1039,7 @@ let _saved = {
   simReady: false,
   printGCode: null as string | null,
   cncGCode: null as string | null,
+  hybridGCode: null as string | null,
   machinedLayers: [] as number[],
 }
 
@@ -911,6 +1057,7 @@ export default function HybridPreview() {
   const [simReady,       setSimReady]       = useState(() => _saved.simReady)
   const [printGCode,     setPrintGCode]     = useState<string | null>(() => _saved.printGCode)
   const [cncGCode,       setCncGCode]       = useState<string | null>(() => _saved.cncGCode)
+  const [hybridGCode,    setHybridGCode]    = useState<string | null>(() => _saved.hybridGCode)
   const [machinedLayers, setMachinedLayers] = useState<number[]>(() => _saved.machinedLayers)
   const [loading,        setLoading]        = useState(false)
   const [error,          setError]          = useState<string | null>(null)
@@ -920,6 +1067,7 @@ export default function HybridPreview() {
   useEffect(() => { _saved.simReady = simReady }, [simReady])
   useEffect(() => { _saved.printGCode = printGCode }, [printGCode])
   useEffect(() => { _saved.cncGCode = cncGCode }, [cncGCode])
+  useEffect(() => { _saved.hybridGCode = hybridGCode }, [hybridGCode])
   useEffect(() => { _saved.machinedLayers = machinedLayers }, [machinedLayers])
 
   const readyJobs    = jobs.filter(j => j.status === 'SlicingComplete' || j.status === 'ToolpathsComplete' || j.status === 'Ready')
@@ -942,7 +1090,10 @@ export default function HybridPreview() {
       // CNC toolpath may not exist yet (SlicingComplete jobs) — treat as empty
       let cg = ''
       try { cg = await jobsApi.getToolpathGCode(jobId) } catch { /* no toolpath yet */ }
-      setPrintGCode(pg); setCncGCode(cg)
+      // Hybrid G-code (combined file) — for accurate simulation
+      let hg: string | null = null
+      try { hg = await jobsApi.getHybridGCode(jobId) } catch { /* no hybrid yet */ }
+      setPrintGCode(pg); setCncGCode(cg); setHybridGCode(hg)
       const layers: number[] = []
       for (const line of cg.split('\n')) {
         const m = line.match(/^;.*Layer\s+(\d+)/i)
@@ -1067,6 +1218,7 @@ export default function HybridPreview() {
             <HybridSimViewer
               printGCode={printGCode}
               cncGCode={cncGCode}
+              hybridGCode={hybridGCode ?? undefined}
               machinedLayers={machinedLayers}
               totalPrintLayers={selectedJob?.totalPrintLayers ?? 100}
               layerHeightMm={layerHeightMm}

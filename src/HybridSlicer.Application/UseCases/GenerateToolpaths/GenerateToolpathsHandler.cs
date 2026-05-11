@@ -500,9 +500,9 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
             var toolpathGCodePath = Path.Combine(jobDir, "toolpath.gcode");
             await File.WriteAllTextAsync(toolpathGCodePath, gcodeBuilder.ToString(), ct);
 
-            // Translate CNC toolpath to machine coordinates (same translation as print G-code)
-            // so both files are in the same coordinate frame when merged into hybrid output.
-            await _coordTranslator.TranslateAsync(toolpathGCodePath, machine, job.BedIndex, ct);
+            // CNC toolpath is already in machine coordinates (wall paths were parsed from
+            // the translated print G-code). No additional coordinate translation needed.
+            // Only remap axis letters if configured.
             await _coordTranslator.RemapAxesAsync(toolpathGCodePath, machine.CncAxes, ct);
 
             job.MarkToolpathsComplete(toolpathGCodePath);

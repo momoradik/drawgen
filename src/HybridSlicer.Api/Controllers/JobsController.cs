@@ -230,10 +230,8 @@ public sealed class JobsController : ControllerBase
             for (var i = 0; i < jobs.Count; i++)
             {
                 var bedJob = jobs[i];
-                // Skip if this bed already has toolpaths generated
-                if (bedJob.ToolpathGCodePath is not null && System.IO.File.Exists(bedJob.ToolpathGCodePath))
-                    continue;
-
+                // Always regenerate CNC toolpaths to ensure they use the latest
+                // machine config and coordinate translation.
                 await _mediator.Send(new GenerateToolpathsCommand(
                     bedJob.Id,
                     request.CncToolId.Value,

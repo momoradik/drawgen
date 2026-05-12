@@ -67,13 +67,11 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
         var profile = await _printProfiles.GetByIdAsync(job.PrintProfileId, ct)
             ?? throw new DomainException("PROFILE_NOT_FOUND", $"Print profile {job.PrintProfileId} not found.");
 
-        // CNC spindle offset: NOT applied to toolpath coordinates.
-        // The wall paths from the print G-code are already in machine coordinates —
-        // those are the exact positions the CNC tool must reach. The physical spindle
-        // offset from the nozzle is handled by firmware tool-offset commands (G10/G43)
-        // or by the user's custom G-code blocks (BeforeMachining).
-        // The offset is stored in the machine profile for simulation/preview only.
-        var cncOffset = MachineOffset.Zero;
+        // CNC spindle offset is applied directly to every emitted coordinate, so the
+        // gantry physically moves to (wall + offset) when the spindle is the active
+        // tool. The controller must NOT also apply a tool offset (G10/G43) for the
+        // spindle — that would double the shift.
+        var cncOffset = machine.CncOffset;
 
         // ── Depth-of-cut validation ───────────────────────────────────────────
         var axialDepthMm = cmd.MachineEveryNLayers * profile.LayerHeightMm;

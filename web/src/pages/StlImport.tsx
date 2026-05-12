@@ -473,6 +473,7 @@ export default function StlImport() {
               machineInnerWalls, avoidSupports, supportClearanceMm,
               autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride,
             )
+            await jobsApi.planHybrid(jobIds[0], machineEveryN)
           }
           qc.invalidateQueries({ queryKey: ['jobs'] })
           setGeneratedJobId(jobIds[0])
@@ -502,13 +503,17 @@ export default function StlImport() {
       const { jobId } = await uploadMutation.mutateAsync(fd)
       await sliceMutation.mutateAsync(jobId)
 
-      // For hybrid single-bed: also generate toolpaths automatically
+      // For hybrid single-bed: also generate toolpaths and merge into a
+      // single hybrid.gcode (multi-bed handles this server-side via mergeBeds).
+      // Without plan-hybrid, HybridGCodePath stays null and the "Download
+      // Hybrid G-code" link returns 400.
       if (isHybrid && cncToolId) {
         await jobsApi.generateToolpaths(
           jobId, cncToolId, machineEveryN,
           machineInnerWalls, avoidSupports, supportClearanceMm,
           autoMachiningFrequency, zSafetyOffsetMm, spindleRpmOverride,
         )
+        await jobsApi.planHybrid(jobId, machineEveryN)
       }
 
       qc.invalidateQueries({ queryKey: ['jobs'] })

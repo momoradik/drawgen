@@ -34,9 +34,27 @@ interface ParsedPrint {
   suppPrefix: Int32Array
 }
 
+/** Build a per-axis regex from a 3-letter remapping string (e.g. "XVW").
+ *  axes[0]=letter for machine X, axes[1]=Y, axes[2]=Z. Falls back to XYZ. */
+function axisRegexes(axes: string): { x: RegExp; y: RegExp; z: RegExp } {
+  const a = (axes && axes.length >= 3 ? axes : 'XYZ').toUpperCase()
+  const lx = a[0] ?? 'X', ly = a[1] ?? 'Y', lz = a[2] ?? 'Z'
+  const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // \b avoids matching the F (feed) letter when axis letter is e.g. F.
+  // We anchor to a token start (start of line OR whitespace).
+  return {
+    x: new RegExp(`(?:^|\\s)${esc(lx)}([+-]?[\\d.]+)`),
+    y: new RegExp(`(?:^|\\s)${esc(ly)}([+-]?[\\d.]+)`),
+    z: new RegExp(`(?:^|\\s)${esc(lz)}([+-]?[\\d.]+)`),
+  }
+}
+
 /** Parse the full print G-code — walls, infill, supports, everything.
- *  Cura TYPE comments are used to colour-code support vs part material. */
-function parsePrintGCode(gcode: string): ParsedPrint {
+ *  Cura TYPE comments are used to colour-code support vs part material.
+ *  extruderAxes is the 3-letter machine remapping for the FDM head
+ *  (default "XYZ"). Required so V/W-style remapped G-code parses correctly. */
+function parsePrintGCode(gcode: string, extruderAxes: string = 'XYZ'): ParsedPrint {
+  const ax = axisRegexes(extruderAxes)
   const segs: PrintSeg[] = []
   const layerBoundaries: number[] = [0]
   let cx = 0, cy = 0, cz = 0, ce = 0, hasPos = false, layerIdx = 0, maxZ = 0
@@ -66,8 +84,8 @@ function parsePrintGCode(gcode: string): ParsedPrint {
     const up = line.toUpperCase()
     if (!up.startsWith('G0') && !up.startsWith('G1')) continue
 
-    const xm = up.match(/X([+-]?[\d.]+)/), ym = up.match(/Y([+-]?[\d.]+)/)
-    const zm = up.match(/Z([+-]?[\d.]+)/), em = up.match(/E([+-]?[\d.]+)/)
+    const xm = ax.x.exec(' ' + up), ym = ax.y.exec(' ' + up)
+    const zm = ax.z.exec(' ' + up), em = up.match(/(?:^|\s)E([+-]?[\d.]+)/)
     const nx = xm ? parseFloat(xm[1]) : cx
     const ny = ym ? parseFloat(ym[1]) : cy
     const nz = zm ? parseFloat(zm[1]) : cz
@@ -92,8 +110,13 @@ function parsePrintGCode(gcode: string): ParsedPrint {
   return { segs, layerBoundaries, maxZ, partPrefix, suppPrefix }
 }
 
-/** Parse the real CNC toolpath G-code. */
-function parseCncGCode(gcode: string): { moves: CncMoveSim[]; blockBoundaries: number[] } {
+/** Parse the real CNC toolpath G-code.
+ *  cncAxes is the 3-letter machine remapping for the CNC head (default "XYZ").
+ *  Required: the toolpath.gcode file written to disk has Y/Z replaced with the
+ *  machine's actual axis letters (e.g. "V"/"W"). Without this mapping the
+ *  parser only finds X values and the whole toolpath collapses onto Y=Z=0. */
+function parseCncGCode(gcode: string, cncAxes: string = 'XYZ'): { moves: CncMoveSim[]; blockBoundaries: number[] } {
+  const ax = axisRegexes(cncAxes)
   const moves: CncMoveSim[] = []
   const blockBoundaries: number[] = [0]
   let cx = 0, cy = 0, cz = 0, hasPos = false, blockIdx = 0
@@ -112,7 +135,8 @@ function parseCncGCode(gcode: string): { moves: CncMoveSim[]; blockBoundaries: n
     const up = line.toUpperCase()
     const isG0 = /^G0($|\s)/.test(up), isG1 = /^G1($|\s)/.test(up)
     if (!isG0 && !isG1) continue
-    const xm = up.match(/X([+-]?[\d.]+)/), ym = up.match(/Y([+-]?[\d.]+)/), zm = up.match(/Z([+-]?[\d.]+)/)
+    const padded = ' ' + up
+    const xm = ax.x.exec(padded), ym = ax.y.exec(padded), zm = ax.z.exec(padded)
     const nx = xm ? parseFloat(xm[1]) : cx
     const ny = ym ? parseFloat(ym[1]) : cy
     const nz = zm ? parseFloat(zm[1]) : cz
@@ -183,7 +207,13 @@ interface HybridParsed {
   stages: SimStage[]
 }
 
-function parseHybridGCode(gcode: string): HybridParsed {
+function parseHybridGCode(
+  gcode: string,
+  extruderAxes: string = 'XYZ',
+  cncAxes: string = 'XYZ',
+): HybridParsed {
+  const extAx = axisRegexes(extruderAxes)
+  const cncAx = axisRegexes(cncAxes)
   const printSegs: PrintSeg[] = []
   const cncMoves: CncMoveSim[] = []
   const stages: SimStage[] = []
@@ -207,15 +237,23 @@ function parseHybridGCode(gcode: string): HybridParsed {
   for (const raw of gcode.split('\n')) {
     const t = raw.trim()
 
-    // Detect section markers from the hybrid G-code
-    if (t.startsWith('; --- PRINT Bed')) {
+    // Detect section markers from the hybrid G-code.
+    // Two emitters produce hybrid.gcode with slightly different section labels:
+    //   • MultiBedMerger: "; --- PRINT Bed 1, layers …", "; --- CNC Bed 1, layers …"
+    //   • HybridOrchestrator (single-bed plan-hybrid): "; --- Print layers …",
+    //     "; --- CNC Machining @ Layer …", "; --- CNC Preamble/Postamble …"
+    // Match on the first word case-insensitively (PRINT/Print, CNC) so both
+    // emitters drive the timeline. The "End CNC @ Layer" marker is ignored —
+    // the next PRINT/CNC marker flushes the previous stage at the right point.
+    const upT = t.toUpperCase()
+    if (upT.startsWith('; --- PRINT ')) {
       flushStage()
       mode = 'print'
       currentLabel = t.replace(/^;\s*---\s*/, '').replace(/\s*---\s*$/, '')
       stageStartPrint = printSegs.length
       continue
     }
-    if (t.startsWith('; --- CNC Bed')) {
+    if (upT.startsWith('; --- CNC ') && !upT.startsWith('; --- END CNC')) {
       flushStage()
       mode = 'cnc'
       currentLabel = t.replace(/^;\s*---\s*/, '').replace(/\s*---\s*$/, '')
@@ -264,8 +302,12 @@ function parseHybridGCode(gcode: string): HybridParsed {
 
     if (!up.startsWith('G0') && !up.startsWith('G1')) continue
 
-    const xm = up.match(/X([+-]?[\d.]+)/), ym = up.match(/Y([+-]?[\d.]+)/)
-    const zm = up.match(/Z([+-]?[\d.]+)/), em = up.match(/E([+-]?[\d.]+)/)
+    // Pick axis mapping by current mode: CNC sections in hybrid.gcode use the
+    // machine's CNC axis letters; PRINT sections use the extruder's letters.
+    const ax = mode === 'cnc' ? cncAx : extAx
+    const padded = ' ' + up
+    const xm = ax.x.exec(padded), ym = ax.y.exec(padded)
+    const zm = ax.z.exec(padded), em = up.match(/(?:^|\s)E([+-]?[\d.]+)/)
     const nx = xm ? parseFloat(xm[1]) : cx
     const ny = ym ? parseFloat(ym[1]) : cy
     const nz = zm ? parseFloat(zm[1]) : cz
@@ -363,6 +405,11 @@ interface ViewerProps {
   cncOffsetX?: number
   cncOffsetY?: number
   cncOffsetZ?: number
+  // Per-tool axis-letter remappings written by IMachineCoordinateTranslator.
+  // For a machine with cncAxes="XVW", the toolpath.gcode on disk uses V for Y
+  // and W for Z; the parser must use the same mapping to decode positions.
+  extruderAxes?: string  // 3 chars, e.g. "XYZ" or "XVW"
+  cncAxes?: string       // 3 chars
   motionAssignment?: {
     enabled: boolean
     extruder: string  // axes extruder moves on, e.g. "YZ"
@@ -376,7 +423,8 @@ export function HybridSimViewer({
   layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth,
   travelX, travelY, travelZ, originX, originY, beds,
   hybridGCode,
-  cncOffsetX = 0, cncOffsetY = 0, cncOffsetZ: _cncOffsetZ = 0,
+  cncOffsetX: _cncOffsetX = 0, cncOffsetY: _cncOffsetY = 0, cncOffsetZ: _cncOffsetZ = 0,
+  extruderAxes = 'XYZ', cncAxes = 'XYZ',
   motionAssignment,
 }: ViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -393,13 +441,13 @@ export function HybridSimViewer({
 
   const parsed = useMemo(() => {
     // Use hybrid G-code parser when available for accurate per-bed staging
-    if (hybridGCode) return parseHybridGCode(hybridGCode)
+    if (hybridGCode) return parseHybridGCode(hybridGCode, extruderAxes, cncAxes)
     // Fallback: separate print + CNC files
-    const print  = parsePrintGCode(printGCode)
-    const cnc    = parseCncGCode(cncGCode)
+    const print  = parsePrintGCode(printGCode, extruderAxes)
+    const cnc    = parseCncGCode(cncGCode, cncAxes)
     const stages = buildStages(print.layerBoundaries, cnc.blockBoundaries, machinedLayers, totalPrintLayers)
     return { print, cnc, stages }
-  }, [printGCode, cncGCode, hybridGCode, machinedLayers, totalPrintLayers])
+  }, [printGCode, cncGCode, hybridGCode, machinedLayers, totalPrintLayers, extruderAxes, cncAxes])
 
   const [stageIdx,      setStageIdx]      = useState(0)
   const [isPlaying,     setIsPlaying]     = useState(false)
@@ -500,11 +548,30 @@ export function HybridSimViewer({
     rendererRef.current = renderer
 
     const controls = new OrbitControls(camera, renderer.domElement)
-    controls.target.set(machineCentreX, 0, machineCentreZ)
+    // Set the orbit target at the part's vertical mid-height (THREE Y).
+    // The dolly direction in OrbitControls is the line camera→target. With
+    // target at bed-level (Y=0) and a tall part above the bed, zooming in
+    // drives the camera down past the part — once the camera's Y drops below
+    // the part, the part falls behind the camera and is culled, so it looks
+    // like it "disappears". Re-targeting at the part's centre keeps zoom
+    // tracking the part naturally for any part height.
+    const partMidY = parsed.print.maxZ > 0
+      ? parsed.print.maxZ / 2 + layerHeightMm  // include layer-height offset (matches deposit Y)
+      : 0
+    controls.target.set(machineCentreX, partMidY, machineCentreZ)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
     controls.enablePan = true
     controls.screenSpacePanning = true
+    // Dolly toward the cursor (CAD-style zoom-to-feature). Without this, the
+    // camera always dollies toward the orbit target regardless of where the
+    // user is looking.
+    controls.zoomToCursor = true
+    // Floor / ceiling on the dolly distance. The floor stops the camera from
+    // ever flying through the scene; the ceiling matches the camera's far
+    // plane so the user can't lose the part by zooming out forever.
+    controls.minDistance = 5
+    controls.maxDistance = 5000
     controls.mouseButtons = {
       LEFT: THREE.MOUSE.ROTATE,
       MIDDLE: THREE.MOUSE.PAN,
@@ -658,7 +725,14 @@ export function HybridSimViewer({
     suppMesh.instanceMatrix.needsUpdate = true
 
     // ── CNC paths ─────────────────────────────────────────────────────────────
+    // Toolpath lines must trace the EXACT coordinates from the CNC G-code so
+    // the simulation faithfully reflects what the controller will run. The
+    // toolpath.gcode on disk uses the machine's remapped axis letters (e.g.
+    // V for Y, W for Z), so parse with the cncAxes mapping — using a fixed
+    // X/Y/Z regex would lose every Y and Z value and collapse the toolpath
+    // onto the X axis.
     {
+      const cncAx = axisRegexes(cncAxes)
       let cx2 = 0, cy2 = 0, cz2 = 0, hasPos2 = false
       const rapidPos: number[] = [], cutPos: number[] = []
       for (const raw of cncGCode.split('\n')) {
@@ -667,7 +741,8 @@ export function HybridSimViewer({
         const up2 = line.toUpperCase()
         const isG0 = /^G0($|\s)/.test(up2), isG1 = /^G1($|\s)/.test(up2)
         if (!isG0 && !isG1) continue
-        const xm = up2.match(/X([+-]?[\d.]+)/), ym = up2.match(/Y([+-]?[\d.]+)/), zm = up2.match(/Z([+-]?[\d.]+)/)
+        const padded = ' ' + up2
+        const xm = cncAx.x.exec(padded), ym = cncAx.y.exec(padded), zm = cncAx.z.exec(padded)
         const nx = xm ? parseFloat(xm[1]) : cx2
         const ny = ym ? parseFloat(ym[1]) : cy2
         const nz = zm ? parseFloat(zm[1]) : cz2
@@ -742,7 +817,7 @@ export function HybridSimViewer({
       el.removeChild(renderer.domElement)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parsed, nozzleDiameterMm, layerHeightMm, toolDiameterMm, bedWidth, bedDepth])
+  }, [parsed, nozzleDiameterMm, layerHeightMm, toolDiameterMm, bedWidth, bedDepth, cncAxes])
 
   // ── Animation tick ────────────────────────────────────────────────────────
   useEffect(() => {
@@ -851,17 +926,15 @@ export function HybridSimViewer({
 
         if (toolRef.current && visEnd > 0 && visEnd <= moves.length) {
           const m = moves[Math.max(0, visEnd - 1)]
+          // Use the EXACT coordinates from the parsed CNC G-code so the
+          // spindle traces the same path the controller will run.
           const gx = m.x, gy = m.z, gz = m.y
           if (ma) {
             const cAxes = ma.cnc.toUpperCase()
-            // CNC tool: moves on its assigned axes; on others, parks at the
-            // active bed centre offset by the spindle's physical position
-            // relative to the nozzle (so the spindle is visibly over the
-            // part being machined, not stuck at the machine origin).
             toolRef.current.position.set(
-              cAxes.includes('X') ? gx : refX + cncOffsetX,
+              cAxes.includes('X') ? gx : refX,
               cAxes.includes('Z') ? gy : 0,
-              cAxes.includes('Y') ? gz : refZ + cncOffsetY,
+              cAxes.includes('Y') ? gz : refZ,
             )
             for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
               const bAxes = (ma.beds[bi] ?? '').toUpperCase()
@@ -1238,6 +1311,8 @@ export default function HybridPreview() {
               cncOffsetX={machine?.cncOffset?.x ?? 0}
               cncOffsetY={machine?.cncOffset?.y ?? 0}
               cncOffsetZ={machine?.cncOffset?.z ?? 0}
+              extruderAxes={machine?.extruderAxes ?? 'XYZ'}
+              cncAxes={machine?.cncAxes ?? 'XYZ'}
               beds={machine ? (() => {
                 try {
                   const raw = JSON.parse(machine.bedsJson || '[]') as any[]

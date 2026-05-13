@@ -50,12 +50,14 @@ public sealed class ContourToolpathPlanner : IToolpathPlanner
             return new ToolpathResult(string.Empty, true, [], []);
 
         // CRC offset: tool_radius + nozzle_radius
-        // Outward (+) for outer walls; inward (−) for inner walls (pockets/holes)
+        // Inner-wall sign FLIPPED — was −, now +. With the original − sign the
+        // toolpath came out LARGER than the hole; flipping it produces an
+        // inward toolpath that stays inside the cavity.
         var toolRadius   = request.ToolDiameterMm   / 2.0;
         var nozzleRadius = request.NozzleDiameterMm / 2.0;
         var crcOffset    = request.IsOuterWall
-            ?  (toolRadius + nozzleRadius)   // expand outward
-            : -(toolRadius + nozzleRadius);  // shrink inward
+            ?  (toolRadius + nozzleRadius)   // outer wall — expand outward
+            :  (toolRadius + nozzleRadius);  // inner wall — also +; see above
 
         var dx = request.MachineOffset.X;
         var dy = request.MachineOffset.Y;

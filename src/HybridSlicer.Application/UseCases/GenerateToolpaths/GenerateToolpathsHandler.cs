@@ -345,14 +345,37 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                         "Layer {L}: {S} support segment(s) detected — will clip toolpaths with {C} mm clearance",
                         layer, supportPaths.Count, cmd.SupportClearanceMm);
 
-                // Collect wall paths to machine
-                var wallPaths = new List<IReadOnlyList<(double X, double Y)>>(
-                    layerData.OuterWallPaths);
+                // Split OuterWallPaths by nesting depth using the even-odd
+                // rule. Cura puts BOTH the part exterior AND every hole/pocket
+                // perimeter into WALL-OUTER. Winding alone isn't a reliable
+                // signal — Cura's CCW/CW choice depends on version and the
+                // "Wall Ordering" setting, so part exteriors can be either.
+                // Containment is robust: a path whose first vertex falls
+                // inside another OuterWall path is geometrically nested one
+                // level deeper. Depth 0 = exterior (always machine);
+                // depth 1 = hole (only machine when MachineInnerWalls);
+                // depth 2 = island in a hole (exterior of a sub-part); etc.
+                var exteriorPaths = new List<IReadOnlyList<(double X, double Y)>>();
+                var holeOuterPaths = new List<IReadOnlyList<(double X, double Y)>>();
+                foreach (var p in layerData.OuterWallPaths)
+                {
+                    if (p.Count < 3) { exteriorPaths.Add(p); continue; }
+                    var tx = p[0].X; var ty = p[0].Y;
+                    var depth = 0;
+                    foreach (var q in layerData.OuterWallPaths)
+                    {
+                        if (ReferenceEquals(q, p)) continue;
+                        if (PointInPolygon(q, tx, ty)) depth++;
+                    }
+                    if ((depth & 1) == 0) exteriorPaths.Add(p);
+                    else                  holeOuterPaths.Add(p);
+                }
 
-                if (cmd.MachineInnerWalls)
-                    wallPaths.AddRange(layerData.InnerWallPaths);
+                var willMachineInner = cmd.MachineInnerWalls;
+                var totalWallCount = exteriorPaths.Count
+                                   + (willMachineInner ? holeOuterPaths.Count + layerData.InnerWallPaths.Count : 0);
 
-                if (wallPaths.Count == 0)
+                if (totalWallCount == 0)
                 {
                     gcodeBuilder.AppendLine($"; Layer {layer} (Z={zHeight:F3} mm) — no wall paths found, skipped");
                     gcodeBuilder.AppendLine();
@@ -360,9 +383,9 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     continue;
                 }
 
-                // Generate CNC toolpath from outer wall paths (at effectiveZ = zHeight + zSafetyOffset)
+                // Generate CNC toolpath from EXTERIOR walls (always).
                 var outerRequest = new WallPathsRequest(
-                    WallPaths:              layerData.OuterWallPaths,
+                    WallPaths:              exteriorPaths,
                     ZHeightMm:              effectiveZ,
                     ToolDiameterMm:         tool.DiameterMm,
                     NozzleDiameterMm:       profile.LineWidthMm,
@@ -375,7 +398,9 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     SupportPaths:           supportPaths,
                     SupportClearanceMm:     cmd.SupportClearanceMm);
 
-                var toolpath = await _planner.PlanFromWallPathsAsync(outerRequest, ct);
+                var toolpath = exteriorPaths.Count > 0
+                    ? await _planner.PlanFromWallPathsAsync(outerRequest, ct)
+                    : new ToolpathResult(string.Empty, true, [], []);
 
                 // Collect unmachinable regions from the outer toolpath
                 if (toolpath.UnmachinableRegions is { Count: > 0 })
@@ -388,13 +413,18 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
                     allUnmachinableRegions.Add(new UnmachinableRegion(effectiveZ, "FluteTooShort", env));
                 }
 
-                // Optionally add inner wall passes
+                // Optionally machine the "inner" surfaces: holes from WALL-OUTER
+                // (CW rings) plus Cura's WALL-INNER (additional perimeter lines).
                 ToolpathResult? innerToolpath = null;
-                if (cmd.MachineInnerWalls && layerData.InnerWallPaths.Count > 0)
+                if (willMachineInner && (holeOuterPaths.Count > 0 || layerData.InnerWallPaths.Count > 0))
                 {
+                    var innerPaths = new List<IReadOnlyList<(double X, double Y)>>();
+                    innerPaths.AddRange(holeOuterPaths);
+                    innerPaths.AddRange(layerData.InnerWallPaths);
+
                     var innerRequest = outerRequest with
                     {
-                        WallPaths   = layerData.InnerWallPaths,
+                        WallPaths   = innerPaths,
                         IsOuterWall = false,
                     };
                     innerToolpath = await _planner.PlanFromWallPathsAsync(innerRequest, ct);
@@ -522,5 +552,28 @@ public sealed class GenerateToolpathsHandler : IRequestHandler<GenerateToolpaths
             await _jobs.UpdateAsync(job, ct);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Ray-casting point-in-polygon test. Used to determine whether one wall
+    /// path is geometrically nested inside another (used for the even-odd
+    /// classification of WALL-OUTER into exterior vs hole).
+    /// </summary>
+    private static bool PointInPolygon(IReadOnlyList<(double X, double Y)> poly, double px, double py)
+    {
+        var n = poly.Count;
+        if (n < 3) return false;
+        var inside = false;
+        for (var i = 0; i < n; i++)
+        {
+            var (xi, yi) = poly[i];
+            var (xj, yj) = poly[(i + n - 1) % n];
+            if (((yi > py) != (yj > py))
+                && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+            {
+                inside = !inside;
+            }
+        }
+        return inside;
     }
 }

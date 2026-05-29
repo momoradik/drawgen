@@ -107,6 +107,8 @@ public sealed class CuraGCodeParser : ICuraGCodeParser
             }
             else // G1
             {
+                var prevX = curX;
+                var prevY = curY;
                 if (x.HasValue) curX = x.Value;
                 if (y.HasValue) curY = y.Value;
 
@@ -124,6 +126,12 @@ public sealed class CuraGCodeParser : ICuraGCodeParser
                     {
                         currentSeg = new();
                         typeSegs.Add(currentSeg);
+                        // Record the nozzle position BEFORE this G1 move —
+                        // this is the first vertex of the wall segment.
+                        // Without it, the path misses its starting point and
+                        // appears open instead of closed, preventing polygon
+                        // formation and full-contour CNC toolpaths.
+                        currentSeg.Add((prevX, prevY));
                     }
 
                     currentSeg.Add((curX, curY));

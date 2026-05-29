@@ -423,7 +423,7 @@ export function HybridSimViewer({
   layerHeightMm, nozzleDiameterMm, toolDiameterMm, bedWidth, bedDepth,
   travelX, travelY, travelZ, originX, originY, beds,
   hybridGCode,
-  cncOffsetX: _cncOffsetX = 0, cncOffsetY: _cncOffsetY = 0, cncOffsetZ: _cncOffsetZ = 0,
+  cncOffsetX = 0, cncOffsetY = 0, cncOffsetZ = 0,
   extruderAxes = 'XYZ', cncAxes = 'XYZ',
   motionAssignment,
 }: ViewerProps) {
@@ -468,6 +468,28 @@ export function HybridSimViewer({
 
   useEffect(() => { speedRef.current = speed }, [speed])
   const ma = motionAssignment?.enabled ? motionAssignment : null
+
+  // ── Axis-letter → physical-direction mapping ──────────────────────────────
+  // When CNC uses remapped axes (e.g. UVW instead of XYZ), the motion
+  // assignment strings use the remapped letters. We need to know which
+  // physical direction each letter corresponds to so the 3D preview moves
+  // beds/tools along the correct scene axis.
+  //   extruderAxes[0] → physical X,  [1] → physical Y,  [2] → physical Z
+  //   cncAxes[0]      → physical X,  [1] → physical Y,  [2] → physical Z
+  const axisToPhysical = useMemo(() => {
+    const map: Record<string, string> = {}
+    const eAx = (extruderAxes || 'XYZ').toUpperCase()
+    const cAx = (cncAxes || 'XYZ').toUpperCase()
+    if (eAx[0]) map[eAx[0]] = 'X'; if (eAx[1]) map[eAx[1]] = 'Y'; if (eAx[2]) map[eAx[2]] = 'Z'
+    if (cAx[0]) map[cAx[0]] = 'X'; if (cAx[1]) map[cAx[1]] = 'Y'; if (cAx[2]) map[cAx[2]] = 'Z'
+    return map
+  }, [extruderAxes, cncAxes])
+
+  /** Does any letter in `axes` map to the given physical direction? */
+  const hasPhys = useCallback((axes: string, dir: string) => {
+    for (const ch of axes.toUpperCase()) if (axisToPhysical[ch] === dir) return true
+    return false
+  }, [axisToPhysical])
 
   // ── Active bed and its scene-space reference centre ───────────────────────
   // The active bed is the one the print is on (detected from G-code centroid).
@@ -619,6 +641,7 @@ export function HybridSimViewer({
     const bedGroups: THREE.Group[] = []
     for (let i = 0; i < bedList.length; i++) {
       const bg = new THREE.Group()
+      bg.frustumCulled = false  // beds move dynamically in motion-assignment mode
       scene.add(bg)
       bedGroups.push(bg)
     }
@@ -640,6 +663,7 @@ export function HybridSimViewer({
         color: bc, side: THREE.DoubleSide, transparent: true, opacity: 0.15,
       }))
       bMesh.position.set(bcx, 0.05, bcy)
+      bMesh.frustumCulled = false
       bedParent.add(bMesh)
 
       // Bed outline (colored border)
@@ -647,6 +671,7 @@ export function HybridSimViewer({
       const outline = new THREE.LineSegments(outlineGeo, new THREE.LineBasicMaterial({ color: ec, linewidth: 2 }))
       outline.rotateX(-Math.PI / 2)
       outline.position.set(bcx, 0.1, bcy)
+      outline.frustumCulled = false
       bedParent.add(outline)
 
       // Corner marker — small cylinder at front-left corner
@@ -691,11 +716,13 @@ export function HybridSimViewer({
 
     const partMesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshPhongMaterial({ color: 0x2277dd }), Math.max(nPart, 1))
     partMesh.count = 0
+    partMesh.frustumCulled = false   // count changes dynamically + position shifts in motion-assignment mode
     scene.add(partMesh)
     partMeshRef.current = partMesh
 
     const suppMesh = new THREE.InstancedMesh(cylGeo, new THREE.MeshPhongMaterial({ color: 0xff8800 }), Math.max(nSupp, 1))
     suppMesh.count = 0
+    suppMesh.frustumCulled = false
     scene.add(suppMesh)
     supportMeshRef.current = suppMesh
 
@@ -725,37 +752,33 @@ export function HybridSimViewer({
     suppMesh.instanceMatrix.needsUpdate = true
 
     // ── CNC paths ─────────────────────────────────────────────────────────────
-    // Toolpath lines must trace the EXACT coordinates from the CNC G-code so
-    // the simulation faithfully reflects what the controller will run. The
-    // toolpath.gcode on disk uses the machine's remapped axis letters (e.g.
-    // V for Y, W for Z), so parse with the cncAxes mapping — using a fixed
-    // X/Y/Z regex would lose every Y and Z value and collapse the toolpath
-    // onto the X axis.
+    // Build visualization geometry directly from parsed.cnc.moves so that the
+    // vertex indices are perfectly aligned with the animation draw-range indices.
+    // Previously this re-parsed cncGCode separately, which produced a different
+    // move count (no small-move filter, different file when hybrid G-code is
+    // used) and caused the contour's closing segments to be clipped off.
     {
-      const cncAx = axisRegexes(cncAxes)
-      let cx2 = 0, cy2 = 0, cz2 = 0, hasPos2 = false
+      const { moves } = parsed.cnc
       const rapidPos: number[] = [], cutPos: number[] = []
-      for (const raw of cncGCode.split('\n')) {
-        const line = raw.split(';')[0].trim()
-        if (!line) continue
-        const up2 = line.toUpperCase()
-        const isG0 = /^G0($|\s)/.test(up2), isG1 = /^G1($|\s)/.test(up2)
-        if (!isG0 && !isG1) continue
-        const padded = ' ' + up2
-        const xm = cncAx.x.exec(padded), ym = cncAx.y.exec(padded), zm = cncAx.z.exec(padded)
-        const nx = xm ? parseFloat(xm[1]) : cx2
-        const ny = ym ? parseFloat(ym[1]) : cy2
-        const nz = zm ? parseFloat(zm[1]) : cz2
-        if (hasPos2) {
-          const arr = isG0 ? rapidPos : cutPos
-          arr.push(cx2, cz2, cy2, nx, nz, ny)
-        }
-        cx2 = nx; cy2 = ny; cz2 = nz; hasPos2 = true
+      // CNC G-code has the spindle offset baked into every coordinate so the
+      // gantry physically places the tool at the wall. Subtract it here so the
+      // visualization aligns with the printed material (which is drawn in the
+      // nozzle's coordinate frame, without the spindle offset).
+      const cox = cncOffsetX, coy = cncOffsetY, coz = cncOffsetZ
+      for (let i = 0; i < moves.length; i++) {
+        const m = moves[i]
+        const prev = i > 0 ? moves[i - 1] : m
+        const arr = m.rapid ? rapidPos : cutPos
+        // Three.js coords: X = gcode X, Y = gcode Z (height), Z = gcode Y (depth)
+        // Subtract CNC offset so toolpath lines sit around the printed part
+        arr.push(prev.x - cox, prev.z - coz, prev.y - coy,
+                 m.x - cox,    m.z - coz,    m.y - coy)
       }
       const rapidGeo = new THREE.BufferGeometry()
       rapidGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(rapidPos), 3))
       rapidGeo.setDrawRange(0, 0)
       const rapidLines = new THREE.LineSegments(rapidGeo, new THREE.LineBasicMaterial({ color: 0xffcc00 }))
+      rapidLines.frustumCulled = false  // position shifts in motion-assignment mode
       scene.add(rapidLines)
       cncRapidRef.current = rapidLines
 
@@ -763,12 +786,14 @@ export function HybridSimViewer({
       cutGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(cutPos), 3))
       cutGeo.setDrawRange(0, 0)
       const cutLines = new THREE.LineSegments(cutGeo, new THREE.LineBasicMaterial({ color: 0x2288ff }))
+      cutLines.frustumCulled = false
       scene.add(cutLines)
       cncCutRef.current = cutLines
     }
 
     // ── FDM Nozzle (hot-end shape, orange tip) ────────────────────────────────
     const nozzleGroup = new THREE.Group()
+    nozzleGroup.frustumCulled = false
     nozzleGroup.visible = false
     const blockMesh2 = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), new THREE.MeshPhongMaterial({ color: 0xc8960c, shininess: 60 }))
     blockMesh2.position.y = 12; nozzleGroup.add(blockMesh2)
@@ -783,6 +808,7 @@ export function HybridSimViewer({
 
     // ── CNC End Mill (tapered flute + collet) ─────────────────────────────────
     const toolGroup = new THREE.Group()
+    toolGroup.frustumCulled = false
     toolGroup.visible = false
     const tr = Math.max(toolDiameterMm / 2, 1.0)
     const fluteMesh2 = new THREE.Mesh(new THREE.CylinderGeometry(tr * 0.9, tr, 18, 12), new THREE.MeshPhongMaterial({ color: 0xd8d8d8, shininess: 120 }))
@@ -871,9 +897,9 @@ export function HybridSimViewer({
               // move on, parks at the active bed's centre so it visibly
               // hovers over the bed instead of at the machine origin.
               nozzleRef.current.position.set(
-                eAxes.includes('X') ? gx : refX,
-                eAxes.includes('Z') ? gy : 0,
-                eAxes.includes('Y') ? gz : refZ,
+                hasPhys(eAxes, 'X') ? gx : refX,
+                hasPhys(eAxes, 'Z') ? gy : 0,
+                hasPhys(eAxes, 'Y') ? gz : refZ,
               )
               // Bed: slides relative to the active bed's centre so the deposit
               // point lands at the head's parked position. With this offset,
@@ -883,9 +909,9 @@ export function HybridSimViewer({
               for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
                 const bAxes = (ma.beds[bi] ?? '').toUpperCase()
                 bedGroupsRef.current[bi].position.set(
-                  bAxes.includes('X') ? (refX - gx) : 0,
-                  bAxes.includes('Z') ? (-gy) : 0,
-                  bAxes.includes('Y') ? (refZ - gz) : 0,
+                  hasPhys(bAxes, 'X') ? (refX - gx) : 0,
+                  hasPhys(bAxes, 'Z') ? (-gy) : 0,
+                  hasPhys(bAxes, 'Y') ? (refZ - gz) : 0,
                 )
               }
               // Printed material + CNC toolpaths ride with the active bed.
@@ -926,22 +952,21 @@ export function HybridSimViewer({
 
         if (toolRef.current && visEnd > 0 && visEnd <= moves.length) {
           const m = moves[Math.max(0, visEnd - 1)]
-          // Use the EXACT coordinates from the parsed CNC G-code so the
-          // spindle traces the same path the controller will run.
-          const gx = m.x, gy = m.z, gz = m.y
+          // Subtract CNC offset so the tool visually tracks the printed part
+          const gx = m.x - cncOffsetX, gy = m.z - cncOffsetZ, gz = m.y - cncOffsetY
           if (ma) {
             const cAxes = ma.cnc.toUpperCase()
             toolRef.current.position.set(
-              cAxes.includes('X') ? gx : refX,
-              cAxes.includes('Z') ? gy : 0,
-              cAxes.includes('Y') ? gz : refZ,
+              hasPhys(cAxes, 'X') ? gx : refX,
+              hasPhys(cAxes, 'Z') ? gy : 0,
+              hasPhys(cAxes, 'Y') ? gz : refZ,
             )
             for (let bi = 0; bi < bedGroupsRef.current.length; bi++) {
               const bAxes = (ma.beds[bi] ?? '').toUpperCase()
               bedGroupsRef.current[bi].position.set(
-                bAxes.includes('X') ? (refX - gx) : 0,
-                bAxes.includes('Z') ? (-gy) : 0,
-                bAxes.includes('Y') ? (refZ - gz) : 0,
+                hasPhys(bAxes, 'X') ? (refX - gx) : 0,
+                hasPhys(bAxes, 'Z') ? (-gy) : 0,
+                hasPhys(bAxes, 'Y') ? (refZ - gz) : 0,
               )
             }
             const activeBg = bedGroupsRef.current[activeBedSceneIdx] ?? bedGroupsRef.current[0]
@@ -991,8 +1016,14 @@ export function HybridSimViewer({
       const s = stages[i]
       if (s.type === 'machine') maxCncMove = s.cncMoveEnd
     }
-    if (cncRapidRef.current) cncRapidRef.current.geometry.setDrawRange(0, maxCncMove * 2)
-    if (cncCutRef.current)   cncCutRef.current.geometry.setDrawRange(0, maxCncMove * 2)
+    // Count rapids and cuts separately — the two buffers have independent indexing
+    const { moves } = parsed.cnc
+    let convergRapid = 0, convergCut = 0
+    for (let i = 0; i < maxCncMove && i < moves.length; i++) {
+      if (moves[i].rapid) convergRapid++; else convergCut++
+    }
+    if (cncRapidRef.current) cncRapidRef.current.geometry.setDrawRange(0, convergRapid * 2)
+    if (cncCutRef.current)   cncCutRef.current.geometry.setDrawRange(0, convergCut * 2)
 
     if (nozzleRef.current) nozzleRef.current.visible = false
     if (toolRef.current)   toolRef.current.visible   = false

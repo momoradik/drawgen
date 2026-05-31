@@ -1,0 +1,88 @@
+using System.Numerics;
+using System.Runtime.InteropServices;
+
+namespace HybridSlicer.Infrastructure.Resin;
+
+/// <summary>
+/// Lightweight triangle mesh loaded from binary STL.
+/// Stored as flat arrays for cache-friendly iteration.
+/// </summary>
+public sealed class StlMesh
+{
+    public Vector3[] Vertices { get; }  // 3 vertices per triangle
+    public int TriangleCount { get; }
+    public Vector3 Min { get; }
+    public Vector3 Max { get; }
+
+    internal StlMesh(Vector3[] vertices, Vector3 min, Vector3 max)
+    {
+        Vertices = vertices;
+        TriangleCount = vertices.Length / 3;
+        Min = min;
+        Max = max;
+    }
+
+    /// <summary>
+    /// Parse a binary STL from a byte array. Fast — no allocations beyond the vertex array.
+    /// </summary>
+    public static StlMesh FromBinary(byte[] data)
+    {
+        if (data.Length < 84)
+            throw new InvalidOperationException("STL file too small to be valid.");
+
+        var triCount = BitConverter.ToUInt32(data, 80);
+        var expectedSize = 84 + triCount * 50;
+        if ((ulong)data.Length < expectedSize)
+            throw new InvalidOperationException($"STL claims {triCount} triangles but file is too short.");
+
+        var vertices = new Vector3[triCount * 3];
+        var min = new Vector3(float.MaxValue);
+        var max = new Vector3(float.MinValue);
+
+        var offset = 84;
+        for (uint i = 0; i < triCount; i++)
+        {
+            // Skip normal (12 bytes)
+            offset += 12;
+
+            for (int v = 0; v < 3; v++)
+            {
+                var x = BitConverter.ToSingle(data, offset);
+                var y = BitConverter.ToSingle(data, offset + 4);
+                var z = BitConverter.ToSingle(data, offset + 8);
+                offset += 12;
+
+                var vert = new Vector3(x, y, z);
+                vertices[i * 3 + v] = vert;
+                min = Vector3.Min(min, vert);
+                max = Vector3.Max(max, vert);
+            }
+
+            // Skip attribute byte count
+            offset += 2;
+        }
+
+        return new StlMesh(vertices, min, max);
+    }
+
+    /// <summary>
+    /// Apply a transform: translate by offset, scale uniformly.
+    /// Returns a new mesh.
+    /// </summary>
+    public StlMesh Transform(Vector3 translate, float scale)
+    {
+        var newVerts = new Vector3[Vertices.Length];
+        var min = new Vector3(float.MaxValue);
+        var max = new Vector3(float.MinValue);
+
+        for (int i = 0; i < Vertices.Length; i++)
+        {
+            var v = (Vertices[i] + translate) * scale;
+            newVerts[i] = v;
+            min = Vector3.Min(min, v);
+            max = Vector3.Max(max, v);
+        }
+
+        return new StlMesh(newVerts, min, max);
+    }
+}

@@ -30,7 +30,7 @@ function gcodeHeader(profile: PrintProfile): string {
 
   return [
     '; ============================================================',
-    '; HybridSlicer — Pellet Calibration G-code',
+    '; Fabrium — Pellet Calibration G-code',
     `; Profile        : ${profile.name}`,
     `; Nozzle         : ${nozzle} mm`,
     `; Layer height   : ${profile.layerHeightMm} mm`,
@@ -353,7 +353,7 @@ export default function PelletCalibration() {
                   <h4 className="text-white font-medium">What is Virtual Filament Diameter?</h4>
                   <p>
                     Pellet extruders don't use standard 1.75 mm filament. To control extrusion volume,
-                    HybridSlicer uses a <span className="text-amber-300 font-medium">virtual filament diameter</span> — a fake
+                    Fabrium uses a <span className="text-amber-300 font-medium">virtual filament diameter</span> — a fake
                     diameter value that tells the firmware how much material to push per mm of E-axis movement.
                   </p>
                   <p>

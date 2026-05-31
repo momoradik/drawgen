@@ -1,27 +1,38 @@
 using System.Diagnostics;
-using System.Drawing.Drawing2D;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text.Json;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
+using Velopack;
+using Velopack.Sources;
 
 namespace HybridSlicer.Launcher;
 
 [System.Runtime.Versioning.SupportedOSPlatform("windows")]
 public sealed class LauncherForm : Form
 {
+    // Dark title bar via DWM
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
     private readonly Process _server;
     private readonly string  _networkIp;
     private readonly string? _curaPath;
     private readonly System.Windows.Forms.Timer _healthTimer;
 
-    // dark-mode palette
-    private static readonly Color BgDark    = Color.FromArgb(24,  24,  27);
-    private static readonly Color BgCard    = Color.FromArgb(39,  39,  42);
-    private static readonly Color Accent    = Color.FromArgb(99,  207, 134);
-    private static readonly Color AccentNet = Color.FromArgb(251, 146, 60);
-    private static readonly Color Muted     = Color.FromArgb(161, 161, 170);
-    private static readonly Color BtnBlue   = Color.FromArgb(59,  130, 246);
-    private static readonly Color BtnRed    = Color.FromArgb(220, 38,  38);
-    private static readonly Color BtnGray   = Color.FromArgb(63,  63,  70);
+    private WebView2    _webView = null!;
+    private NotifyIcon? _tray;
+    private string _status = "starting";
+    private bool   _webReady;
 
-    private Label _statusDot = null!;
+    // ── Update state ────────────────────────────────────────────────────────
+    private string  _updateStatus = "checking";
+    private string? _updateVersion;
+    private int?    _updatePct;
+    private Velopack.UpdateInfo? _pendingUpdate;
+    private UpdateManager? _updateMgr;
 
     public LauncherForm(Process server, string networkIp, string? curaPath)
     {
@@ -30,191 +41,282 @@ public sealed class LauncherForm : Form
         _curaPath  = curaPath;
 
         _healthTimer = new System.Windows.Forms.Timer { Interval = 2000 };
-        _healthTimer.Tick += (_, _) => UpdateStatus();
+        _healthTimer.Tick += (_, _) => PollHealth();
 
         BuildUi();
+        CreateTray();
         _healthTimer.Start();
     }
 
     private void BuildUi()
     {
-        Text            = "HybridSlicer Launcher";
-        Size            = new Size(460, 310);
-        MinimumSize     = Size;
-        MaximumSize     = Size;
+        Text            = "Fabrium";
+        AutoScaleMode   = AutoScaleMode.Dpi;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox     = false;
         StartPosition   = FormStartPosition.CenterScreen;
-        BackColor       = BgDark;
-        ForeColor       = Color.White;
-        FormBorderStyle = FormBorderStyle.FixedSingle;
+        BackColor       = Color.FromArgb(15, 23, 42);
 
-        // ── Title bar area ────────────────────────────────────────────────────
-        var titleLabel = MakeLabel("HybridSlicer", new Point(20, 20),
-            new Font("Segoe UI", 14, FontStyle.Bold));
-        titleLabel.ForeColor = Color.White;
+        // Match AMTrack's exact window: 480×580
+        float scale = DeviceDpi / 96f;
+        ClientSize = new Size((int)(480 * scale), (int)(580 * scale));
 
-        _statusDot = MakeLabel("● Starting…", new Point(20, 52));
-        _statusDot.ForeColor = Color.Yellow;
+        // Dark title bar (matches AMTrack's Electron window)
+        int dark = 1;
+        DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
 
-        // ── URL card ──────────────────────────────────────────────────────────
-        var card = new Panel
+        using var icoStream = Assembly.GetExecutingAssembly()
+            .GetManifestResourceStream("HybridSlicer.Launcher.icon.ico");
+        if (icoStream is not null) Icon = new Icon(icoStream);
+
+        _webView = new WebView2
         {
-            Location  = new Point(14, 82),
-            Size      = new Size(416, 100),
-            BackColor = BgCard,
+            Dock = DockStyle.Fill,
+            DefaultBackgroundColor = Color.FromArgb(15, 23, 42),
         };
-        RoundPanel(card, 8);
-        Controls.Add(card);
+        Controls.Add(_webView);
 
-        var localLabel = MakeLabel("Local :", new Point(14, 14), parent: card);
-        localLabel.ForeColor = Muted;
-        localLabel.Size      = new Size(60, 20);
+        InitWebView();
 
-        var localLink = MakeLink("http://localhost:5000",
-            new Point(80, 14), "http://localhost:5000", card);
-        localLink.ForeColor = Accent;
-
-        var netLabel = MakeLabel("Network :", new Point(14, 48), parent: card);
-        netLabel.ForeColor = Muted;
-        netLabel.Size      = new Size(60, 20);
-
-        var netText = $"http://{_networkIp}:5000";
-        var netLink = MakeLink(netText, new Point(80, 48), netText, card);
-        netLink.Font      = new Font("Segoe UI", 9.5f, FontStyle.Bold);
-        netLink.ForeColor = AccentNet;
-
-        // ── Cura status ───────────────────────────────────────────────────────
-        var curaLabel = MakeLabel(
-            _curaPath is not null
-                ? $"CuraEngine: auto-detected ✓"
-                : "CuraEngine: not found — set path manually in appsettings.json",
-            new Point(20, 192));
-        curaLabel.ForeColor = _curaPath is not null ? Accent : Color.FromArgb(248, 113, 113);
-        curaLabel.Size      = new Size(420, 18);
-
-        // ── Buttons ───────────────────────────────────────────────────────────
-        var btnOpen = MakeButton("Open in Browser", new Point(20, 222), BtnBlue, 140);
-        btnOpen.Click += (_, _) => OpenUrl($"http://{_networkIp}:5000");
-
-        var btnCopy = MakeButton("Copy URL", new Point(168, 222), BtnGray, 100);
-        btnCopy.Click += (_, _) =>
+        FormClosing += (_, e) =>
         {
-            Clipboard.SetText($"http://{_networkIp}:5000");
-            btnCopy.Text = "Copied!";
-            Task.Delay(1500).ContinueWith(_ => Invoke(() => btnCopy.Text = "Copy URL"));
-        };
-
-        var btnLogs = MakeButton("View Logs", new Point(276, 222), BtnGray, 90);
-        btnLogs.Click += (_, _) =>
-        {
-            var logPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "logs", "server.log");
-            if (File.Exists(logPath))
-                Process.Start(new ProcessStartInfo("notepad.exe", logPath) { UseShellExecute = true });
-            else
-                MessageBox.Show("No log file found.", "Logs", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        };
-
-        var btnStop = MakeButton("Stop", new Point(374, 222), BtnRed, 66);
-        btnStop.Click += (_, _) => Close();
-
-        Controls.AddRange(new Control[] { titleLabel, _statusDot, curaLabel, btnOpen, btnCopy, btnLogs, btnStop });
-
-        FormClosed += (_, _) =>
-        {
-            _healthTimer.Stop();
-            try { if (!_server.HasExited) _server.Kill(entireProcessTree: true); } catch { }
+            if (e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                Hide();
+            }
         };
     }
 
-    private void UpdateStatus()
+    private async void InitWebView()
     {
-        if (_server.HasExited)
+        try
         {
-            _statusDot.Text      = "● Server stopped";
-            _statusDot.ForeColor = Color.FromArgb(248, 113, 113);
-            return;
+            var env = await CoreWebView2Environment.CreateAsync(
+                userDataFolder: Path.Combine(Path.GetTempPath(), "Fabrium-WebView2"));
+            await _webView.EnsureCoreWebView2Async(env);
+
+            _webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            _webView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            _webView.CoreWebView2.Settings.IsZoomControlEnabled = false;
+            _webView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+
+            _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
+
+            var html = GetHtmlWithLogo();
+            _webView.CoreWebView2.NavigateToString(html);
+
+            _webReady = true;
+
+            _webView.CoreWebView2.NavigationCompleted += (_, _) =>
+            {
+                PushState();
+                // Auto-check for updates on launch
+                _ = CheckForUpdatesAsync();
+            };
+        }
+        catch (Exception ex)
+        {
+            Controls.Clear();
+            BackColor = Color.FromArgb(15, 23, 42);
+            Controls.Add(new Label
+            {
+                Text = $"Fabrium is running at http://{_networkIp}:5000\n\n" +
+                       $"Error: {ex.Message}",
+                Dock = DockStyle.Fill, ForeColor = Color.White,
+                Font = new Font("Segoe UI", 10f),
+                TextAlign = ContentAlignment.MiddleCenter, Padding = new Padding(20),
+            });
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  AUTO-UPDATER — checks GitHub releases, shows progress in UI
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            SetUpdateStatus("checking");
+
+            var source = new GithubSource("https://github.com/momoradik/hybridslicerv2", null, false);
+            _updateMgr = new UpdateManager(source);
+
+            var update = await _updateMgr.CheckForUpdatesAsync();
+            if (update is null)
+            {
+                SetUpdateStatus("uptodate");
+                return;
+            }
+
+            _updateVersion = update.TargetFullRelease.Version.ToString();
+            SetUpdateStatus("downloading");
+
+            await _updateMgr.DownloadUpdatesAsync(update, p =>
+            {
+                _updatePct = p;
+                SetUpdateStatus("downloading");
+            });
+
+            _pendingUpdate = update;
+            SetUpdateStatus("ready");
+        }
+        catch
+        {
+            SetUpdateStatus("error");
+        }
+    }
+
+    private void ApplyUpdate()
+    {
+        if (_pendingUpdate is null || _updateMgr is null) return;
+        _updateMgr.ApplyUpdatesAndRestart(_pendingUpdate);
+    }
+
+    private void SetUpdateStatus(string status)
+    {
+        _updateStatus = status;
+        if (InvokeRequired)
+            Invoke(PushState);
+        else
+            PushState();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  WEBVIEW MESSAGE HANDLING
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs args)
+    {
+        var msg = args.TryGetWebMessageAsString();
+        switch (msg)
+        {
+            case "open-browser":
+                OpenUrl($"http://{_networkIp}:5000");
+                break;
+            case "check-updates":
+                _ = CheckForUpdatesAsync();
+                break;
+            case "apply-update":
+                ApplyUpdate();
+                break;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  STATE PUSH TO WEBVIEW
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void PushState()
+    {
+        if (!_webReady || _webView.CoreWebView2 is null) return;
+
+        var ver = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "1.0.0";
+        var json = JsonSerializer.Serialize(new
+        {
+            status        = _status,
+            url           = $"http://{_networkIp}:5000",
+            version       = ver,
+            cura          = _curaPath is not null,
+            update        = _updateStatus,
+            updateVersion = _updateVersion,
+            updatePct     = _updatePct,
+        });
+
+        try { _webView.CoreWebView2.PostWebMessageAsJson(json); } catch { }
+    }
+
+    private string GetHtmlWithLogo()
+    {
+        var asm = Assembly.GetExecutingAssembly();
+        string html;
+        using (var stream = asm.GetManifestResourceStream("HybridSlicer.Launcher.launcher.html"))
+        {
+            if (stream is null) return "<html><body>Error: HTML resource not found</body></html>";
+            using var reader = new StreamReader(stream);
+            html = reader.ReadToEnd();
         }
 
-        // Quick TCP check on port 5000
+        using var iconStream = asm.GetManifestResourceStream("HybridSlicer.Launcher.icon.ico");
+        if (iconStream is not null)
+        {
+            var ico = new Icon(iconStream, 64, 64);
+            using var bmp = ico.ToBitmap();
+            using var ms = new MemoryStream();
+            bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            var b64 = Convert.ToBase64String(ms.ToArray());
+            html = html.Replace("src=\"\"", $"src=\"data:image/png;base64,{b64}\"");
+        }
+
+        return html;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  SYSTEM TRAY
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void CreateTray()
+    {
+        var menu = new ContextMenuStrip();
+        menu.BackColor = Color.FromArgb(30, 41, 59);
+        menu.ForeColor = Color.FromArgb(248, 250, 252);
+        menu.Renderer  = new DarkRenderer();
+
+        menu.Items.Add(new ToolStripLabel("Fabrium") { ForeColor = Color.FromArgb(100, 116, 139), Enabled = false });
+        menu.Items.Add(new ToolStripLabel($"http://{_networkIp}:5000") { ForeColor = Color.FromArgb(100, 116, 139), Enabled = false });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Open in Browser", null, (_, _) => OpenUrl($"http://{_networkIp}:5000"));
+        menu.Items.Add("Check for Updates", null, (_, _) => _ = CheckForUpdatesAsync());
+        menu.Items.Add("Show Status Window", null, (_, _) => { Show(); BringToFront(); Activate(); });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Quit Fabrium", null, (_, _) => QuitApp());
+
+        _tray = new NotifyIcon
+        {
+            Icon             = Icon,
+            Text             = $"Fabrium  \u00b7  http://{_networkIp}:5000",
+            ContextMenuStrip = menu,
+            Visible          = true,
+        };
+        _tray.Click += (_, _) => { Show(); WindowState = FormWindowState.Normal; BringToFront(); Activate(); };
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  HEALTH POLLING
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private void PollHealth()
+    {
+        if (_server.HasExited) { SetServerStatus("error"); return; }
+
         try
         {
             using var tcp = new System.Net.Sockets.TcpClient();
-            var result = tcp.BeginConnect("127.0.0.1", 5000, null, null);
-            if (result.AsyncWaitHandle.WaitOne(300))
-            {
-                tcp.EndConnect(result);
-                _statusDot.Text      = "● Running";
-                _statusDot.ForeColor = Accent;
-                return;
-            }
+            var r = tcp.BeginConnect("127.0.0.1", 5000, null, null);
+            if (r.AsyncWaitHandle.WaitOne(300)) { tcp.EndConnect(r); SetServerStatus("running"); return; }
         }
         catch { }
 
-        _statusDot.Text      = "● Starting…";
-        _statusDot.ForeColor = Color.Yellow;
+        SetServerStatus("starting");
     }
 
-    // ── Factory helpers ───────────────────────────────────────────────────────
-
-    private Label MakeLabel(string text, Point loc, Font? font = null, Control? parent = null)
+    private void SetServerStatus(string st)
     {
-        var lbl = new Label
-        {
-            Text      = text,
-            AutoSize  = true,
-            Location  = loc,
-            Font      = font ?? new Font("Segoe UI", 9f),
-            BackColor = Color.Transparent,
-            ForeColor = Color.White,
-        };
-        (parent ?? this).Controls.Add(lbl);
-        return lbl;
+        _status = st;
+        PushState();
     }
 
-    private LinkLabel MakeLink(string text, Point loc, string url, Control parent)
-    {
-        var lnk = new LinkLabel
-        {
-            Text      = text,
-            AutoSize  = true,
-            Location  = loc,
-            Font      = new Font("Segoe UI", 9f),
-            BackColor = Color.Transparent,
-            LinkColor = Accent,
-            ActiveLinkColor = Color.White,
-        };
-        lnk.LinkClicked += (_, _) => OpenUrl(url);
-        parent.Controls.Add(lnk);
-        return lnk;
-    }
+    // ═══════════════════════════════════════════════════════════════════════
+    //  HELPERS
+    // ═══════════════════════════════════════════════════════════════════════
 
-    private Button MakeButton(string text, Point loc, Color bg, int width)
+    private void QuitApp()
     {
-        var btn = new Button
-        {
-            Text      = text,
-            Location  = loc,
-            Size      = new Size(width, 34),
-            BackColor = bg,
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
-            Font      = new Font("Segoe UI", 9f),
-            Cursor    = Cursors.Hand,
-        };
-        btn.FlatAppearance.BorderSize = 0;
-        Controls.Add(btn);
-        return btn;
-    }
-
-    private static void RoundPanel(Panel p, int radius)
-    {
-        var path = new GraphicsPath();
-        path.AddArc(0, 0, radius * 2, radius * 2, 180, 90);
-        path.AddArc(p.Width - radius * 2, 0, radius * 2, radius * 2, 270, 90);
-        path.AddArc(p.Width - radius * 2, p.Height - radius * 2, radius * 2, radius * 2, 0, 90);
-        path.AddArc(0, p.Height - radius * 2, radius * 2, radius * 2, 90, 90);
-        path.CloseAllFigures();
-        p.Region = new Region(path);
+        _healthTimer.Stop();
+        if (_tray is not null) { _tray.Visible = false; _tray.Dispose(); }
+        try { if (!_server.HasExited) _server.Kill(entireProcessTree: true); } catch { }
+        Environment.Exit(0);
     }
 
     private static void OpenUrl(string url)
@@ -224,7 +326,36 @@ public sealed class LauncherForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _healthTimer.Dispose();
+        if (disposing) { _healthTimer.Dispose(); _tray?.Dispose(); _webView?.Dispose(); }
         base.Dispose(disposing);
+    }
+
+    private sealed class DarkRenderer : ToolStripProfessionalRenderer
+    {
+        public DarkRenderer() : base(new DarkColors()) { }
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            e.TextColor = e.Item.Enabled ? Color.FromArgb(248, 250, 252) : Color.FromArgb(100, 116, 139);
+            base.OnRenderItemText(e);
+        }
+    }
+
+    private sealed class DarkColors : ProfessionalColorTable
+    {
+        private static readonly Color H = Color.FromArgb(30, 41, 59);
+        private static readonly Color B = Color.FromArgb(51, 65, 85);
+        public override Color MenuBorder => B;
+        public override Color MenuItemBorder => B;
+        public override Color MenuItemSelected => B;
+        public override Color MenuItemSelectedGradientBegin => B;
+        public override Color MenuItemSelectedGradientEnd => B;
+        public override Color MenuStripGradientBegin => H;
+        public override Color MenuStripGradientEnd => H;
+        public override Color ToolStripDropDownBackground => H;
+        public override Color ImageMarginGradientBegin => H;
+        public override Color ImageMarginGradientMiddle => H;
+        public override Color ImageMarginGradientEnd => H;
+        public override Color SeparatorDark => B;
+        public override Color SeparatorLight => B;
     }
 }

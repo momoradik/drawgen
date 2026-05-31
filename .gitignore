@@ -43,6 +43,13 @@ jobs/
 cura_config.json
 *.gcode
 
+# ── Build / Publish artifacts ────────────────────────────────────────────────
+publish/
+installer/*.exe
+installer/*.zip
+installer/*.nupkg
+*.log
+
 # Secrets / env
 .env
 .env.local

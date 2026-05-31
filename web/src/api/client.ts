@@ -1,7 +1,7 @@
 import axios from 'axios'
 import type {
   MachineProfile, PrintProfile, CncTool,
-  PrintJob, CustomGCodeBlock, BrandingSettings, Material
+  PrintJob, CustomGCodeBlock, BrandingSettings, Material, ResinPrintProfile, ResinMaterial
 } from '../types'
 
 const http = axios.create({ baseURL: '/api' })
@@ -13,6 +13,7 @@ export const machineProfilesApi = {
   create: (data: Partial<MachineProfile>) => http.post<MachineProfile>('/machine-profiles', data).then(r => r.data),
   update: (id: string, data: Partial<MachineProfile>) => http.put<MachineProfile>(`/machine-profiles/${id}`, data).then(r => r.data),
   updateOffsets: (id: string, offsets: object) => http.put(`/machine-profiles/${id}/offsets`, offsets).then(r => r.data),
+  duplicate: (id: string, name?: string) => http.post<MachineProfile>(`/machine-profiles/${id}/duplicate`, { name }).then(r => r.data),
   delete: (id: string) => http.delete(`/machine-profiles/${id}`),
 }
 
@@ -106,6 +107,133 @@ export const customGCodeApi = {
   update: (id: string, data: Partial<CustomGCodeBlock>) => http.put<CustomGCodeBlock>(`/custom-gcode-blocks/${id}`, data).then(r => r.data),
   toggle: (id: string, enabled: boolean) => http.patch(`/custom-gcode-blocks/${id}/toggle`, { enabled }),
   delete: (id: string) => http.delete(`/custom-gcode-blocks/${id}`),
+}
+
+// ── Resin Print Profiles ──────────────────────────────────────────────
+export const resinPrintProfilesApi = {
+  getAll: () => http.get<ResinPrintProfile[]>('/resin-print-profiles').then(r => r.data),
+  getById: (id: string) => http.get<ResinPrintProfile>(`/resin-print-profiles/${id}`).then(r => r.data),
+  create: (data: Partial<ResinPrintProfile>) => http.post<ResinPrintProfile>('/resin-print-profiles', data).then(r => r.data),
+  update: (id: string, data: Partial<ResinPrintProfile>) => http.put<ResinPrintProfile>(`/resin-print-profiles/${id}`, data).then(r => r.data),
+  duplicate: (id: string, name?: string) => http.post<ResinPrintProfile>(`/resin-print-profiles/${id}/duplicate`, { name }).then(r => r.data),
+  delete: (id: string) => http.delete(`/resin-print-profiles/${id}`),
+}
+
+// ── Mesh Validation ──────────────────────────────────────────────────
+export const meshApi = {
+  validate: (formData: FormData) =>
+    http.post<{
+      isValid: boolean; triangleCount: number
+      degenerateTriangles: number; nanInfVertices: number; flippedNormals: number
+      nonManifoldEdges: number; openEdges: number; boundsValid: boolean; volumeMm3: number
+      sizeX: number; sizeY: number; sizeZ: number
+      warnings: string[]; errors: string[]
+    }>('/mesh/validate', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data),
+}
+
+// ── Resin Materials ──────────────────────────────────────────────────
+export const resinMaterialsApi = {
+  getAll: () => http.get<ResinMaterial[]>('/resin-materials').then(r => r.data),
+  getById: (id: string) => http.get<ResinMaterial>(`/resin-materials/${id}`).then(r => r.data),
+  create: (data: Partial<ResinMaterial>) => http.post<ResinMaterial>('/resin-materials', data).then(r => r.data),
+  update: (id: string, data: Partial<ResinMaterial>) => http.put<ResinMaterial>(`/resin-materials/${id}`, data).then(r => r.data),
+  duplicate: (id: string, name?: string) => http.post<ResinMaterial>(`/resin-materials/${id}/duplicate`, { name }).then(r => r.data),
+  delete: (id: string) => http.delete(`/resin-materials/${id}`),
+}
+
+// ── Auto Support Generation ──────────────────────────────────────────
+export interface GeneratedSupportData {
+  x: number; y: number; contactZ: number; baseZ: number
+  tipDiameter: number; columnDiameter: number; baseDiameter: number
+  normalX: number; normalY: number; normalZ: number
+}
+export interface RaftData {
+  type: string; minX: number; minY: number; maxX: number; maxY: number
+  thicknessMm: number; marginMm: number
+}
+export interface SkirtData {
+  minX: number; minY: number; maxX: number; maxY: number
+  layers: number; distanceMm: number; widthMm: number
+}
+export const autoSupportApi = {
+  generate: (fd: FormData) =>
+    http.post<{
+      supportCount: number; overhangFaceCount: number; elapsedMs: number; orientation: string
+      supports: GeneratedSupportData[]; raft: RaftData | null; skirt: SkirtData | null
+    }>('/auto-support', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000,
+    }).then(r => r.data),
+}
+
+// ── Advanced Support Generation ──────────────────────────────────────
+export interface SupportSegmentData {
+  part: string; x1: number; y1: number; z1: number; r1: number
+  x2: number; y2: number; z2: number; r2: number
+}
+export interface AdvancedSupportData {
+  id: string; type: string
+  contactX: number; contactY: number; contactZ: number
+  baseX: number; baseY: number; baseZ: number
+  mergeX?: number; mergeY?: number; mergeZ?: number
+  parentTrunkId?: string
+  preset: { name: string; tipDiameterMm: number; shaftDiameterMm: number; baseDiameterMm: number }
+  segments: SupportSegmentData[]
+}
+export interface CrossBraceData {
+  supportA: string; supportB: string
+  x1: number; y1: number; z1: number; x2: number; y2: number; z2: number; diameter: number
+}
+export const advancedSupportApi = {
+  generate: (fd: FormData) =>
+    http.post<{
+      supportCount: number; braceCount: number; overhangFaceCount: number; elapsedMs: number
+      orientation: string; supportType: string
+      supports: AdvancedSupportData[]; crossBraces: CrossBraceData[]
+    }>('/advanced-support', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' }, timeout: 30000,
+    }).then(r => r.data),
+}
+
+// ── Prep Tools (drain holes, support optimization) ───────────────────
+export const prepToolsApi = {
+  suggestDrainHoles: (fd: FormData) =>
+    http.post<{ count: number; holes: { x: number; y: number; z: number; diameterMm: number; depthMm: number }[] }>(
+      '/prep-tools/suggest-drain-holes', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data),
+  optimizeSupports: (fd: FormData) =>
+    http.post<{
+      originalCount: number; finalCount: number; addedForReinforcement: number
+      removedForReduction: number; recoaterReinforcements: number; warnings: string[]
+      supports: GeneratedSupportData[]
+    }>('/prep-tools/optimize-supports', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data),
+}
+
+// ── Resin Slicing ────────────────────────────────────────────────────
+export const resinSliceApi = {
+  slice: (formData: FormData) =>
+    http.post<{
+      jobId: string; layerCount: number; bottomLayerCount: number
+      layerHeightMm: number; resolutionX: number; resolutionY: number
+      normalExposureMs: number; bottomExposureMs: number
+      totalHeightMm: number; estimatedPrintTimeMin: number; elapsedMs: number
+      printerName: string; profileName: string
+    }>('/resin-slice', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 300000, // 5 min max for large models
+    }).then(r => r.data),
+  getLayerImageUrl: (jobId: string, layerIndex: number) =>
+    `/api/resin-slice/${jobId}/layer/${layerIndex}`,
+  getLayerData: (jobId: string) =>
+    http.get<{
+      jobId: string; layerCount: number; bottomLayerCount: number
+      layerHeightMm: number; resolutionX: number; resolutionY: number
+      totalHeightMm: number; estimatedPrintTimeMin: number
+      layers: {
+        index: number; zHeightMm: number; layerThicknessMm: number
+        type: string; exposureMs: number; liftDistanceMm: number
+        liftSpeedMmPerMin: number; lightOffDelayMs: number
+        imageFileName: string; contourCount: number; imageSizeBytes: number; isEmpty: boolean
+      }[]
+    }>(`/resin-slice/${jobId}/layers`).then(r => r.data),
 }
 
 // ── Branding ──────────────────────────────────────────────────────────────

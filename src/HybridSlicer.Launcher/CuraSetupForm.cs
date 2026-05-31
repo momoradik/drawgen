@@ -15,7 +15,7 @@ internal sealed class CuraSetupForm : Form
         "https://github.com/Ultimaker/Cura/releases/download/5.12.0/UltiMaker-Cura-5.12.0-win64-X64.exe";
 
     private static readonly string LogPath =
-        Path.Combine(Path.GetTempPath(), "HybridSlicer-CuraSetup.log");
+        Path.Combine(Path.GetTempPath(), "Fabrium-CuraSetup.log");
 
     private static readonly Color BgDark  = Color.FromArgb(24, 24, 27);
     private static readonly Color BgCard  = Color.FromArgb(39, 39, 42);
@@ -37,7 +37,7 @@ internal sealed class CuraSetupForm : Form
 
     public CuraSetupForm(string reason)
     {
-        Text            = "HybridSlicer — First-time Setup";
+        Text            = "Fabrium — First-time Setup";
         Size            = new Size(520, 310);
         MinimumSize     = Size;
         MaximumSize     = Size;
@@ -157,7 +157,7 @@ internal sealed class CuraSetupForm : Form
     private async Task RunSetupAsync()
     {
         var installerPath = Path.Combine(Path.GetTempPath(), "UltiMaker-Cura-5.12.0-win64-X64.exe");
-        Log("=== HybridSlicer Cura Setup ===");
+        Log("=== Fabrium Cura Setup ===");
         Log($"Timestamp: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 
         try
@@ -171,7 +171,7 @@ internal sealed class CuraSetupForm : Form
             {
                 _statusLabel.Text      = "Installation complete!";
                 _statusLabel.ForeColor = Accent;
-                _detailLabel.Text      = "CuraEngine 5.12.0 is ready. Launching HybridSlicer…";
+                _detailLabel.Text      = "CuraEngine 5.12.0 is ready. Launching Fabrium…";
                 _progress.Value        = 100;
                 _skipBtn.Text          = "Continue";
                 _skipBtn.BackColor     = Color.FromArgb(22, 163, 74);
@@ -215,7 +215,7 @@ internal sealed class CuraSetupForm : Form
         // HttpClient follows redirects (GitHub → CDN) automatically
         using var handler = new HttpClientHandler { AllowAutoRedirect = true, MaxAutomaticRedirections = 10 };
         using var http    = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(30) };
-        http.DefaultRequestHeaders.Add("User-Agent", "HybridSlicer/1.0");
+        http.DefaultRequestHeaders.Add("User-Agent", "Fabrium/1.0");
 
         using var response = await http.GetAsync(InstallerUrl, HttpCompletionOption.ResponseHeadersRead, _cts.Token);
         Log($"HTTP status: {(int)response.StatusCode} {response.StatusCode}");
@@ -270,7 +270,7 @@ internal sealed class CuraSetupForm : Form
         });
 
         if (!confirmed)
-            throw new Exception("Installation cancelled. Click 'Skip' to continue without slicing, or reopen HybridSlicer to try again.");
+            throw new Exception("Installation cancelled. Click 'Skip' to continue without slicing, or reopen Fabrium to try again.");
 
         SetStatus("Installing UltiMaker Cura 5.12.0…",
             "Cura installer is running — complete it to continue.", 96);
@@ -290,7 +290,7 @@ internal sealed class CuraSetupForm : Form
         {
             throw new Exception(
                 "Windows administrator access was denied (you clicked No on the UAC prompt).\n\n" +
-                "Please reopen HybridSlicer and click YES when Windows asks for permission.");
+                "Please reopen Fabrium and click YES when Windows asks for permission.");
         }
 
         Log($"Installer PID: {proc.Id}");

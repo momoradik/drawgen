@@ -3,7 +3,9 @@ export type JobStatus =
   | 'GeneratingToolpaths' | 'ToolpathsComplete' | 'PlanningHybrid'
   | 'Ready' | 'Running' | 'Paused' | 'Complete' | 'Failed'
 
-export type MachineType = 'FDM' | 'CNC' | 'Hybrid'
+export type MachineType = 'FDM' | 'CNC' | 'Hybrid' | 'MSLA' | 'DLP'
+export type PrinterOrientation = 'BottomUp' | 'TopDown'
+export type AALevel = 'None' | 'X2' | 'X4' | 'X8'
 export type ToolType = 'FlatEndMill' | 'BallEndMill' | 'BullNoseEndMill' | 'DrillBit' | 'Engraver' | 'Facemill' | 'Custom'
 export type GCodeTrigger =
   | 'BeforeMachining' | 'AfterMachining' | 'BeforePrinting' | 'AfterPrinting' | 'JobStart' | 'JobEnd'
@@ -47,6 +49,32 @@ export interface MachineProfile {
   cncAxes: string
   motionAssignmentEnabled: boolean
   motionAssignmentJson: string
+  // Resin fields (MSLA / DLP)
+  orientation: PrinterOrientation
+  resolutionX: number
+  resolutionY: number
+  pixelPitchUm: number
+  mirrorX: boolean
+  mirrorY: boolean
+  buildOffsetXMm: number
+  buildOffsetYMm: number
+  defaultLayerHeightMm: number
+  defaultBottomLayerCount: number
+  defaultNormalExposureMs: number
+  defaultBottomExposureMs: number
+  lightOffDelayMs: number
+  liftDistanceMm: number
+  liftSpeedMmPerMin: number
+  retractDistanceMm: number
+  retractSpeedMmPerMin: number
+  bottomLiftDistanceMm: number
+  bottomLiftSpeedMmPerMin: number
+  restTimeAfterLiftMs: number
+  restTimeAfterRetractMs: number
+  antiAliasing: AALevel
+  exportFormat: string
+  effectivePixelPitchMm: number
+  isResinPrinter: boolean
   version: string
 }
 
@@ -164,6 +192,51 @@ export interface BrandingSettings {
   primaryColor: string
   accentColor: string
   supportEmail?: string
+}
+
+export interface ResinPrintProfile {
+  id: string
+  name: string
+  layerHeightMm: number
+  antiAliasing: AALevel
+  supportEnabled: boolean
+  supportType: string
+  supportPlacement: string
+  supportDensity: number
+  supportPattern: string
+  supportOverhangAngleDeg: number
+  supportXYDistanceMm: number
+  supportZDistanceMm: number
+  supportInterfaceEnabled: boolean
+  supportInterfaceDensity: number
+  supportRoofEnabled: boolean
+  supportFloorEnabled: boolean
+  hollowingEnabled: boolean
+  hollowWallThicknessMm: number
+  drainHoleDiameterMm: number
+  drainHoleDepthMm: number
+  version: string
+}
+
+export interface ResinMaterial {
+  id: string
+  name: string
+  category: string
+  manufacturer?: string
+  colorHex?: string
+  normalExposureMs: number
+  bottomExposureMs: number
+  bottomLayerCount: number
+  lightOffDelayMs: number
+  liftDistanceMm: number
+  liftSpeedMmPerMin: number
+  retractSpeedMmPerMin: number
+  densityGPerCm3: number
+  viscosityCps: number
+  wavelengthNm: number
+  shrinkagePct: number
+  notes?: string
+  version: string
 }
 
 export interface Material {

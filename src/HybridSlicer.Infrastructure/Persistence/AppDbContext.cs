@@ -18,6 +18,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProcessStep> ProcessSteps => Set<ProcessStep>();
     public DbSet<CustomGCodeBlock> CustomGCodeBlocks => Set<CustomGCodeBlock>();
     public DbSet<BrandingSettings> BrandingSettings => Set<BrandingSettings>();
+    public DbSet<ResinPrintProfile> ResinPrintProfiles => Set<ResinPrintProfile>();
+    public DbSet<ResinMaterial> ResinMaterials => Set<ResinMaterial>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
@@ -76,6 +78,25 @@ public sealed class AppDbContext : DbContext
 
         // ── PrintProfile ─────────────────────────────────────────────────────
         model.Entity<PrintProfile>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.Version).HasMaxLength(20);
+            e.HasQueryFilter(x => !x.IsDeleted);
+        });
+
+        // ── ResinPrintProfile ────────────────────────────────────────────────
+        model.Entity<ResinPrintProfile>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Name).HasMaxLength(200).IsRequired();
+            e.Property(x => x.AntiAliasing).HasConversion<string>();
+            e.Property(x => x.Version).HasMaxLength(20);
+            e.HasQueryFilter(x => !x.IsDeleted);
+        });
+
+        // ── ResinMaterial ────────────────────────────────────────────────────
+        model.Entity<ResinMaterial>(e =>
         {
             e.HasKey(x => x.Id);
             e.Property(x => x.Name).HasMaxLength(200).IsRequired();

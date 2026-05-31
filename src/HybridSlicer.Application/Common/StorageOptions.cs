@@ -12,5 +12,5 @@ public sealed class StorageOptions
     /// <summary>Absolute path to the root directory for jobs, logs, and temp files.</summary>
     public string Root { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "HybridSlicer");
+        "Fabrium");
 }

@@ -113,6 +113,105 @@ public class MachineProfile
         Touch();
     }
 
+    // ── Resin printer fields (MSLA / DLP) ─────────────────────────────────
+    public PrinterOrientation Orientation { get; private set; } = PrinterOrientation.BottomUp;
+
+    // Native image resolution (pixels)
+    public int ResolutionX { get; private set; }
+    public int ResolutionY { get; private set; }
+
+    // Pixel pitch in microns (MSLA: from LCD spec; DLP: calculated from projection width / resolutionX)
+    // If 0, auto-calculated from build width / resolutionX
+    public double PixelPitchUm { get; private set; }
+
+    // Mirror / flip for printer output
+    public bool MirrorX { get; private set; }
+    public bool MirrorY { get; private set; }
+
+    // Build-area offsets (mm)
+    public double BuildOffsetXMm { get; private set; }
+    public double BuildOffsetYMm { get; private set; }
+
+    // Default exposure settings
+    public double DefaultLayerHeightMm { get; private set; } = 0.05;
+    public int DefaultBottomLayerCount { get; private set; } = 5;
+    public double DefaultNormalExposureMs { get; private set; } = 2500;
+    public double DefaultBottomExposureMs { get; private set; } = 30000;
+    public double LightOffDelayMs { get; private set; }
+
+    // Lift / retract / peel settings
+    public double LiftDistanceMm { get; private set; } = 5.0;
+    public double LiftSpeedMmPerMin { get; private set; } = 60;
+    public double RetractDistanceMm { get; private set; } = 5.0;
+    public double RetractSpeedMmPerMin { get; private set; } = 150;
+    public double BottomLiftDistanceMm { get; private set; } = 8.0;
+    public double BottomLiftSpeedMmPerMin { get; private set; } = 45;
+    public double RestTimeAfterLiftMs { get; private set; }
+    public double RestTimeAfterRetractMs { get; private set; }
+
+    // Anti-aliasing / grayscale
+    public AntiAliasingLevel AntiAliasing { get; private set; } = AntiAliasingLevel.None;
+
+    // Target export format family (e.g. "ctb", "pwmx", "sl1s", "image-sequence")
+    public string ExportFormat { get; private set; } = "";
+
+    // ── Recoater configuration (Top-Down printers) ──────────────────────
+    public bool HasRecoater { get; private set; }
+    public double RecoaterSpeedMmPerS { get; private set; }        // blade/roller speed
+    public double RecoaterClearanceMm { get; private set; } = 2.0; // clearance above part
+    public string RecoaterType { get; private set; } = "blade";    // blade | roller
+    public string RecoaterDirection { get; private set; } = "X";   // X | Y — sweep direction
+
+    public bool IsResinPrinter => Type is MachineType.MSLA or MachineType.DLP;
+
+    /// <summary>Calculated pixel pitch in mm. Falls back to build width / resolutionX.</summary>
+    public double EffectivePixelPitchMm =>
+        PixelPitchUm > 0 ? PixelPitchUm / 1000.0
+        : ResolutionX > 0 ? BedWidthMm / ResolutionX
+        : 0.05;
+
+    public void SetResinSettings(
+        PrinterOrientation orientation,
+        int resolutionX, int resolutionY,
+        double pixelPitchUm,
+        bool mirrorX, bool mirrorY,
+        double buildOffsetXMm, double buildOffsetYMm,
+        double defaultLayerHeightMm, int defaultBottomLayerCount,
+        double defaultNormalExposureMs, double defaultBottomExposureMs,
+        double lightOffDelayMs,
+        double liftDistanceMm, double liftSpeedMmPerMin,
+        double retractDistanceMm, double retractSpeedMmPerMin,
+        double bottomLiftDistanceMm, double bottomLiftSpeedMmPerMin,
+        double restTimeAfterLiftMs, double restTimeAfterRetractMs,
+        AntiAliasingLevel antiAliasing,
+        string exportFormat)
+    {
+        Orientation = orientation;
+        ResolutionX = resolutionX > 0 ? resolutionX : ResolutionX;
+        ResolutionY = resolutionY > 0 ? resolutionY : ResolutionY;
+        PixelPitchUm = pixelPitchUm;
+        MirrorX = mirrorX;
+        MirrorY = mirrorY;
+        BuildOffsetXMm = buildOffsetXMm;
+        BuildOffsetYMm = buildOffsetYMm;
+        DefaultLayerHeightMm = defaultLayerHeightMm > 0 ? defaultLayerHeightMm : DefaultLayerHeightMm;
+        DefaultBottomLayerCount = defaultBottomLayerCount > 0 ? defaultBottomLayerCount : DefaultBottomLayerCount;
+        DefaultNormalExposureMs = defaultNormalExposureMs > 0 ? defaultNormalExposureMs : DefaultNormalExposureMs;
+        DefaultBottomExposureMs = defaultBottomExposureMs > 0 ? defaultBottomExposureMs : DefaultBottomExposureMs;
+        LightOffDelayMs = lightOffDelayMs;
+        LiftDistanceMm = liftDistanceMm > 0 ? liftDistanceMm : LiftDistanceMm;
+        LiftSpeedMmPerMin = liftSpeedMmPerMin > 0 ? liftSpeedMmPerMin : LiftSpeedMmPerMin;
+        RetractDistanceMm = retractDistanceMm > 0 ? retractDistanceMm : RetractDistanceMm;
+        RetractSpeedMmPerMin = retractSpeedMmPerMin > 0 ? retractSpeedMmPerMin : RetractSpeedMmPerMin;
+        BottomLiftDistanceMm = bottomLiftDistanceMm > 0 ? bottomLiftDistanceMm : BottomLiftDistanceMm;
+        BottomLiftSpeedMmPerMin = bottomLiftSpeedMmPerMin > 0 ? bottomLiftSpeedMmPerMin : BottomLiftSpeedMmPerMin;
+        RestTimeAfterLiftMs = restTimeAfterLiftMs;
+        RestTimeAfterRetractMs = restTimeAfterRetractMs;
+        AntiAliasing = antiAliasing;
+        ExportFormat = exportFormat?.Trim() ?? "";
+        Touch();
+    }
+
     // Versioning / audit
     public string Version { get; private set; } = "1.0";
     public DateTime CreatedAt { get; private set; }
@@ -405,6 +504,37 @@ public class MachineProfile
             throw new DomainException("INVALID_NAME", "Machine profile name must not be empty.");
         Name = name.Trim();
         Touch();
+    }
+
+    public MachineProfile Duplicate(string newName)
+    {
+        if (string.IsNullOrWhiteSpace(newName))
+            throw new DomainException("INVALID_NAME", "Name must not be empty.");
+
+        var copy = Create(newName, Type, BedWidthMm, BedDepthMm, BedHeightMm, ExtruderCount);
+        copy.TravelXMm = TravelXMm; copy.TravelYMm = TravelYMm; copy.TravelZMm = TravelZMm;
+        copy.OriginMode = OriginMode;
+        copy.BedPositionXMm = BedPositionXMm; copy.BedPositionYMm = BedPositionYMm;
+        copy.OriginXMm = OriginXMm; copy.OriginYMm = OriginYMm;
+        copy.IpAddress = IpAddress; copy.Port = Port;
+        // Resin fields
+        copy.Orientation = Orientation;
+        copy.ResolutionX = ResolutionX; copy.ResolutionY = ResolutionY;
+        copy.PixelPitchUm = PixelPitchUm;
+        copy.MirrorX = MirrorX; copy.MirrorY = MirrorY;
+        copy.BuildOffsetXMm = BuildOffsetXMm; copy.BuildOffsetYMm = BuildOffsetYMm;
+        copy.DefaultLayerHeightMm = DefaultLayerHeightMm;
+        copy.DefaultBottomLayerCount = DefaultBottomLayerCount;
+        copy.DefaultNormalExposureMs = DefaultNormalExposureMs;
+        copy.DefaultBottomExposureMs = DefaultBottomExposureMs;
+        copy.LightOffDelayMs = LightOffDelayMs;
+        copy.LiftDistanceMm = LiftDistanceMm; copy.LiftSpeedMmPerMin = LiftSpeedMmPerMin;
+        copy.RetractDistanceMm = RetractDistanceMm; copy.RetractSpeedMmPerMin = RetractSpeedMmPerMin;
+        copy.BottomLiftDistanceMm = BottomLiftDistanceMm; copy.BottomLiftSpeedMmPerMin = BottomLiftSpeedMmPerMin;
+        copy.RestTimeAfterLiftMs = RestTimeAfterLiftMs; copy.RestTimeAfterRetractMs = RestTimeAfterRetractMs;
+        copy.AntiAliasing = AntiAliasing;
+        copy.ExportFormat = ExportFormat;
+        return copy;
     }
 
     public void SoftDelete()

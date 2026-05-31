@@ -44,6 +44,25 @@ export interface StlViewerHandle {
   autoArrange(): void
 }
 
+// Support editing types
+export interface SupportPointData {
+  id: string
+  x: number; y: number; z: number
+  type: 'light' | 'medium' | 'heavy'
+  // Advanced: segment-based geometry
+  segments?: { part: string; x1: number; y1: number; z1: number; r1: number; x2: number; y2: number; z2: number; r2: number }[]
+}
+export interface CrossBraceDisplayData {
+  x1: number; y1: number; z1: number; x2: number; y2: number; z2: number; diameter: number
+}
+export interface PaintedRegionData {
+  id: string
+  mode: 'enforcer' | 'blocker'
+  cx: number; cy: number; cz: number
+  radiusMm: number
+}
+export type SupportEditMode = 'none' | 'add' | 'delete' | 'paint-enforcer' | 'paint-blocker'
+
 interface Props {
   models: ModelEntry[]
   selectedId: string | null
@@ -55,6 +74,19 @@ interface Props {
   onBoundsChange?: (id: string, out: boolean) => void
   onFaceSelected?: (selected: boolean) => void
   onSizeChange?: (id: string, size: { x: number; y: number; z: number }) => void
+  // Support editing
+  supportEditMode?: SupportEditMode
+  supportPoints?: SupportPointData[]
+  paintedRegions?: PaintedRegionData[]
+  supportTipType?: 'light' | 'medium' | 'heavy'
+  supportBrushSize?: number
+  onSupportPointAdd?: (x: number, y: number, z: number, nx: number, ny: number, nz: number) => void
+  onSupportPointDelete?: (id: string) => void
+  onPaintRegionAdd?: (mode: 'enforcer' | 'blocker', cx: number, cy: number, cz: number) => void
+  crossBraces?: CrossBraceDisplayData[]
+  // Raft/Skirt visualization
+  raftData?: { type: string; minX: number; minY: number; maxX: number; maxY: number; thicknessMm: number } | null
+  skirtData?: { minX: number; minY: number; maxX: number; maxY: number; layers: number; distanceMm: number; widthMm: number } | null
 }
 
 // ── Coordinate-space helpers ──────────────────────────────────────────────────
@@ -133,6 +165,17 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
     onBoundsChange,
     onFaceSelected,
     onSizeChange,
+    supportEditMode,
+    supportPoints,
+    paintedRegions,
+    supportTipType: _supportTipType,
+    supportBrushSize: _supportBrushSize,
+    onSupportPointAdd,
+    onSupportPointDelete,
+    onPaintRegionAdd,
+    crossBraces,
+    raftData,
+    skirtData,
   },
   ref,
 ) {
@@ -857,6 +900,258 @@ const StlViewer = forwardRef<StlViewerHandle, Props>(function StlViewer(
 
     paintAll()
   }, [selectedId, sceneReady, paintAll])
+
+  // ── Support point & painted region rendering ───────────────────────────────
+
+  const supportGroupRef = useRef<THREE.Group | null>(null)
+
+  useEffect(() => {
+    if (!sceneReady) return
+    const scene = sceneRef.current!
+
+    // Remove old support visuals
+    if (supportGroupRef.current) {
+      scene.remove(supportGroupRef.current)
+      supportGroupRef.current.traverse(c => {
+        if ((c as THREE.Mesh).geometry) (c as THREE.Mesh).geometry.dispose()
+        if ((c as THREE.Mesh).material) ((c as THREE.Mesh).material as THREE.Material).dispose()
+      })
+      supportGroupRef.current = null
+    }
+
+    const pts = supportPoints ?? []
+    const regions = paintedRegions ?? []
+    if (pts.length === 0 && regions.length === 0) return
+
+    const group = new THREE.Group()
+    group.name = 'support-visuals'
+
+    // Render support points — advanced segment-based or simple fallback
+    const tipColors = { light: 0x4ade80, medium: 0xfbbf24, heavy: 0xf87171 }
+    const segColors: Record<string, number> = {
+      tip: 0xff6b6b, neck: 0xfbbf24, upperTaper: 0x4ade80, shaft: 0x38bdf8,
+      lowerTaper: 0x818cf8, base: 0x6366f1, branch: 0xa78bfa, brace: 0xf97316,
+    }
+    pts.forEach(p => {
+      const color = tipColors[p.type] ?? 0xfbbf24
+
+      if (p.segments && p.segments.length > 0) {
+        // Advanced: render each segment as a tapered cylinder
+        p.segments.forEach(seg => {
+          const segColor = segColors[seg.part] ?? color
+          const h = Math.sqrt((seg.x2-seg.x1)**2 + (seg.y2-seg.y1)**2 + (seg.z2-seg.z1)**2)
+          if (h < 0.01) return
+          const r1 = Math.max(0.02, seg.r1)
+          const r2 = Math.max(0.02, seg.r2)
+          const geo = new THREE.CylinderGeometry(r1, r2, h, 8)
+          const mat = new THREE.MeshPhongMaterial({ color: segColor, transparent: true, opacity: 0.75 })
+          const mesh = new THREE.Mesh(geo, mat)
+          // Position at midpoint, orient along segment direction
+          // Print-space → Three.js: x=x, y=z, z=y
+          const mx = (seg.x1+seg.x2)/2, my = (seg.z1+seg.z2)/2, mz = (seg.y1+seg.y2)/2
+          mesh.position.set(mx, my, mz)
+          // Orient cylinder along the segment direction
+          const dir = new THREE.Vector3(seg.x2-seg.x1, seg.z2-seg.z1, seg.y2-seg.y1).normalize()
+          if (dir.length() > 0.01) {
+            const up = new THREE.Vector3(0, 1, 0)
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, dir)
+            mesh.setRotationFromQuaternion(quat)
+          }
+          mesh.userData = { supportPointId: p.id }
+          group.add(mesh)
+        })
+      } else {
+        // Simple fallback: sphere + column
+        const tipR = p.type === 'light' ? 0.15 : p.type === 'medium' ? 0.25 : 0.4
+        const sphereGeo = new THREE.SphereGeometry(tipR, 8, 8)
+        const sphereMat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.9 })
+        const sphere = new THREE.Mesh(sphereGeo, sphereMat)
+        sphere.position.set(p.x, p.z, p.y)
+        sphere.userData = { supportPointId: p.id }
+        group.add(sphere)
+        if (p.z > 0.1) {
+          const colH = p.z, colR = tipR * 0.4
+          const colGeo = new THREE.CylinderGeometry(colR, colR, colH, 6)
+          const colMat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.5 })
+          const col = new THREE.Mesh(colGeo, colMat)
+          col.position.set(p.x, colH / 2, p.y)
+          col.userData = { supportPointId: p.id }
+          group.add(col)
+        }
+      }
+    })
+
+    // Render cross-braces
+    const braces = crossBraces ?? []
+    braces.forEach(b => {
+      const h = Math.sqrt((b.x2-b.x1)**2 + (b.y2-b.y1)**2 + (b.z2-b.z1)**2)
+      if (h < 0.01) return
+      const r = b.diameter / 2
+      const geo = new THREE.CylinderGeometry(r, r, h, 4)
+      const mat = new THREE.MeshPhongMaterial({ color: 0xf97316, transparent: true, opacity: 0.5 })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set((b.x1+b.x2)/2, (b.z1+b.z2)/2, (b.y1+b.y2)/2)
+      const dir = new THREE.Vector3(b.x2-b.x1, b.z2-b.z1, b.y2-b.y1).normalize()
+      if (dir.length() > 0.01) mesh.setRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,1,0), dir))
+      group.add(mesh)
+    })
+
+    // Render painted regions as transparent spheres
+    regions.forEach(r => {
+      const color = r.mode === 'enforcer' ? 0x3b82f6 : 0xf97316
+      const geo = new THREE.SphereGeometry(r.radiusMm, 12, 12)
+      const mat = new THREE.MeshPhongMaterial({ color, transparent: true, opacity: 0.25, depthWrite: false })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.set(r.cx, r.cz, r.cy) // print-space → Three.js
+      mesh.userData = { paintedRegionId: r.id }
+      group.add(mesh)
+
+      // Wireframe outline
+      const wireGeo = new THREE.SphereGeometry(r.radiusMm, 8, 8)
+      const wireMat = new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.5 })
+      const wire = new THREE.Mesh(wireGeo, wireMat)
+      wire.position.copy(mesh.position)
+      group.add(wire)
+    })
+
+    // Render raft (flat rectangle under model)
+    if (raftData) {
+      const rw = raftData.maxX - raftData.minX
+      const rd = raftData.maxY - raftData.minY
+      const rh = raftData.thicknessMm
+      const raftGeo = new THREE.BoxGeometry(rw, rh, rd)
+      const raftColor = raftData.type === 'solid' ? 0x4a9eff : raftData.type === 'grid' ? 0x3b82f6 : 0x6366f1
+      const raftMat = new THREE.MeshPhongMaterial({ color: raftColor, transparent: true, opacity: 0.4 })
+      const raftMesh = new THREE.Mesh(raftGeo, raftMat)
+      raftMesh.position.set(
+        (raftData.minX + raftData.maxX) / 2,
+        -rh / 2, // just below bed
+        (raftData.minY + raftData.maxY) / 2
+      )
+      group.add(raftMesh)
+
+      // Raft wireframe
+      const raftWire = new THREE.LineSegments(
+        new THREE.EdgesGeometry(raftGeo),
+        new THREE.LineBasicMaterial({ color: raftColor, transparent: true, opacity: 0.6 })
+      )
+      raftWire.position.copy(raftMesh.position)
+      group.add(raftWire)
+    }
+
+    // Render skirt (outline box at base)
+    if (skirtData) {
+      const sw = skirtData.maxX - skirtData.minX
+      const sd = skirtData.maxY - skirtData.minY
+      const sh = skirtData.layers * 0.05 // approximate layer height
+      const skirtGeo = new THREE.BoxGeometry(sw, sh, sd)
+      const skirtEdges = new THREE.EdgesGeometry(skirtGeo)
+      const skirtLine = new THREE.LineSegments(skirtEdges,
+        new THREE.LineBasicMaterial({ color: 0x22d3ee, transparent: true, opacity: 0.5 })
+      )
+      skirtLine.position.set(
+        (skirtData.minX + skirtData.maxX) / 2,
+        sh / 2,
+        (skirtData.minY + skirtData.maxY) / 2
+      )
+      group.add(skirtLine)
+    }
+
+    scene.add(group)
+    supportGroupRef.current = group
+  }, [supportPoints, paintedRegions, crossBraces, raftData, skirtData, sceneReady])
+
+  // ── Support callback refs (avoid stale closures) ─────────────────────────
+  const onSupportPointAddRef = useRef(onSupportPointAdd)
+  onSupportPointAddRef.current = onSupportPointAdd
+  const onSupportPointDeleteRef = useRef(onSupportPointDelete)
+  onSupportPointDeleteRef.current = onSupportPointDelete
+  const onPaintRegionAddRef = useRef(onPaintRegionAdd)
+  onPaintRegionAddRef.current = onPaintRegionAdd
+
+  // ── Support editing click handler ─────────────────────────────────────────
+
+  useEffect(() => {
+    if (!sceneReady) return
+    const mode = supportEditMode ?? 'none'
+    if (mode === 'none') return
+
+    const renderer = rendererRef.current!
+    const camera = cameraRef.current!
+    const raycaster = new THREE.Raycaster()
+
+    const toNDC = (e: MouseEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect()
+      return new THREE.Vector2(
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
+      )
+    }
+
+    const onClick = (e: MouseEvent) => {
+      // Only handle left click, ignore if dragging
+      if (e.button !== 0) return
+
+      raycaster.setFromCamera(toNDC(e), camera)
+
+      if (mode === 'add') {
+        // Raycast against model meshes to find surface point
+        const meshes: THREE.Mesh[] = []
+        meshMapRef.current.forEach(d => meshes.push(d.mesh))
+        const hits = raycaster.intersectObjects(meshes, false)
+        if (hits.length > 0) {
+          const hit = hits[0]
+          // Convert Three.js position back to print-space (x=x, y=z, z=y)
+          const wp = hit.point
+          const wn = hit.face?.normal ?? new THREE.Vector3(0, 1, 0)
+          onSupportPointAddRef.current?.(wp.x, wp.z, wp.y, wn.x, wn.z, wn.y)
+          e.stopPropagation()
+        }
+      } else if (mode === 'delete') {
+        // Raycast against support point spheres
+        if (supportGroupRef.current) {
+          const supportMeshes = supportGroupRef.current.children.filter(
+            c => (c as THREE.Mesh).userData?.supportPointId
+          )
+          const hits = raycaster.intersectObjects(supportMeshes, false)
+          if (hits.length > 0) {
+            const id = hits[0].object.userData.supportPointId
+            onSupportPointDeleteRef.current?.(id)
+            e.stopPropagation()
+          }
+        }
+      } else if (mode === 'paint-enforcer' || mode === 'paint-blocker') {
+        const meshes: THREE.Mesh[] = []
+        meshMapRef.current.forEach(d => meshes.push(d.mesh))
+        const hits = raycaster.intersectObjects(meshes, false)
+        if (hits.length > 0) {
+          const wp = hits[0].point
+          const paintMode = mode === 'paint-enforcer' ? 'enforcer' : 'blocker'
+          onPaintRegionAddRef.current?.(paintMode, wp.x, wp.z, wp.y)
+          e.stopPropagation()
+        }
+      }
+    }
+
+    renderer.domElement.addEventListener('click', onClick)
+    return () => renderer.domElement.removeEventListener('click', onClick)
+  }, [supportEditMode, sceneReady])
+
+  // (callback refs declared above the click handler useEffect)
+
+  // ── Cursor style for support editing mode ─────────────────────────────────
+
+  useEffect(() => {
+    if (!sceneReady) return
+    const el = rendererRef.current?.domElement
+    if (!el) return
+    const mode = supportEditMode ?? 'none'
+    el.style.cursor = mode === 'none' ? '' :
+      mode === 'add' ? 'crosshair' :
+      mode === 'delete' ? 'not-allowed' :
+      'cell' // paint modes
+    return () => { el.style.cursor = '' }
+  }, [supportEditMode, sceneReady])
 
   return <div ref={mountRef} className={`w-full h-full ${className}`} />
 })

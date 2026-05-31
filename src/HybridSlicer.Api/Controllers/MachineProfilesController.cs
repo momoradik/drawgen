@@ -81,6 +81,10 @@ public sealed class MachineProfilesController : ControllerBase
         if (req.MotionAssignmentEnabled.HasValue || req.MotionAssignmentJson is not null)
             profile.SetMotionAssignment(req.MotionAssignmentEnabled ?? false, req.MotionAssignmentJson ?? "{}");
 
+        // Resin fields (MSLA / DLP)
+        if (req.Type is MachineType.MSLA or MachineType.DLP)
+            ApplyResinFields(profile, req);
+
         await _repo.AddAsync(profile, ct);
         return CreatedAtAction(nameof(GetById), new { id = profile.Id }, profile);
     }
@@ -172,8 +176,79 @@ public sealed class MachineProfilesController : ControllerBase
         if (req.MotionAssignmentEnabled.HasValue || req.MotionAssignmentJson is not null)
             profile.SetMotionAssignment(req.MotionAssignmentEnabled ?? profile.MotionAssignmentEnabled, req.MotionAssignmentJson ?? profile.MotionAssignmentJson);
 
+        // Resin fields
+        if (req.ResinSettings is not null)
+            ApplyResinFields(profile, req.ResinSettings);
+
         await _repo.UpdateAsync(profile, ct);
         return Ok(profile);
+    }
+
+    [HttpPost("{id:guid}/duplicate")]
+    public async Task<IActionResult> Duplicate(Guid id, [FromBody] DuplicateRequest req, CancellationToken ct)
+    {
+        var original = await _repo.GetByIdAsync(id, ct);
+        if (original is null) return NotFound();
+
+        var name = req.Name?.Trim();
+        if (string.IsNullOrWhiteSpace(name)) name = original.Name + " (Copy)";
+
+        var all = await _repo.GetAllAsync(ct);
+        if (all.Any(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            var i = 2;
+            while (all.Any(m => string.Equals(m.Name, $"{name} ({i})", StringComparison.OrdinalIgnoreCase))) i++;
+            name = $"{name} ({i})";
+        }
+
+        var copy = original.Duplicate(name);
+        await _repo.AddAsync(copy, ct);
+        return CreatedAtAction(nameof(GetById), new { id = copy.Id }, copy);
+    }
+
+    private static void ApplyResinFields(MachineProfile profile, ResinSettingsDto r)
+    {
+        profile.SetResinSettings(
+            Enum.TryParse<Domain.Enums.PrinterOrientation>(r.Orientation, true, out var o) ? o : profile.Orientation,
+            r.ResolutionX ?? profile.ResolutionX,
+            r.ResolutionY ?? profile.ResolutionY,
+            r.PixelPitchUm ?? profile.PixelPitchUm,
+            r.MirrorX ?? profile.MirrorX,
+            r.MirrorY ?? profile.MirrorY,
+            r.BuildOffsetXMm ?? profile.BuildOffsetXMm,
+            r.BuildOffsetYMm ?? profile.BuildOffsetYMm,
+            r.DefaultLayerHeightMm ?? profile.DefaultLayerHeightMm,
+            r.DefaultBottomLayerCount ?? profile.DefaultBottomLayerCount,
+            r.DefaultNormalExposureMs ?? profile.DefaultNormalExposureMs,
+            r.DefaultBottomExposureMs ?? profile.DefaultBottomExposureMs,
+            r.LightOffDelayMs ?? profile.LightOffDelayMs,
+            r.LiftDistanceMm ?? profile.LiftDistanceMm,
+            r.LiftSpeedMmPerMin ?? profile.LiftSpeedMmPerMin,
+            r.RetractDistanceMm ?? profile.RetractDistanceMm,
+            r.RetractSpeedMmPerMin ?? profile.RetractSpeedMmPerMin,
+            r.BottomLiftDistanceMm ?? profile.BottomLiftDistanceMm,
+            r.BottomLiftSpeedMmPerMin ?? profile.BottomLiftSpeedMmPerMin,
+            r.RestTimeAfterLiftMs ?? profile.RestTimeAfterLiftMs,
+            r.RestTimeAfterRetractMs ?? profile.RestTimeAfterRetractMs,
+            Enum.TryParse<Domain.Enums.AntiAliasingLevel>(r.AntiAliasing, true, out var aa) ? aa : profile.AntiAliasing,
+            r.ExportFormat ?? profile.ExportFormat);
+    }
+
+    private static void ApplyResinFields(MachineProfile profile, CreateMachineProfileRequest req)
+    {
+        var r = new ResinSettingsDto(
+            Orientation: req.Orientation, ResolutionX: req.ResolutionX, ResolutionY: req.ResolutionY,
+            PixelPitchUm: req.PixelPitchUm, MirrorX: req.MirrorX, MirrorY: req.MirrorY,
+            BuildOffsetXMm: req.BuildOffsetXMm, BuildOffsetYMm: req.BuildOffsetYMm,
+            DefaultLayerHeightMm: req.DefaultLayerHeightMm, DefaultBottomLayerCount: req.DefaultBottomLayerCount,
+            DefaultNormalExposureMs: req.DefaultNormalExposureMs, DefaultBottomExposureMs: req.DefaultBottomExposureMs,
+            LightOffDelayMs: req.LightOffDelayMs,
+            LiftDistanceMm: req.LiftDistanceMm, LiftSpeedMmPerMin: req.LiftSpeedMmPerMin,
+            RetractDistanceMm: req.RetractDistanceMm, RetractSpeedMmPerMin: req.RetractSpeedMmPerMin,
+            BottomLiftDistanceMm: req.BottomLiftDistanceMm, BottomLiftSpeedMmPerMin: req.BottomLiftSpeedMmPerMin,
+            RestTimeAfterLiftMs: req.RestTimeAfterLiftMs, RestTimeAfterRetractMs: req.RestTimeAfterRetractMs,
+            AntiAliasing: req.AntiAliasing, ExportFormat: req.ExportFormat);
+        ApplyResinFields(profile, r);
     }
 
     [HttpPut("{id:guid}/offsets")]
@@ -233,7 +308,21 @@ public record CreateMachineProfileRequest(
     string? ExtruderAxes = null,
     string? CncAxes = null,
     bool? MotionAssignmentEnabled = null,
-    string? MotionAssignmentJson = null);
+    string? MotionAssignmentJson = null,
+    // Resin fields
+    string? Orientation = null,
+    int? ResolutionX = null, int? ResolutionY = null,
+    double? PixelPitchUm = null,
+    bool? MirrorX = null, bool? MirrorY = null,
+    double? BuildOffsetXMm = null, double? BuildOffsetYMm = null,
+    double? DefaultLayerHeightMm = null, int? DefaultBottomLayerCount = null,
+    double? DefaultNormalExposureMs = null, double? DefaultBottomExposureMs = null,
+    double? LightOffDelayMs = null,
+    double? LiftDistanceMm = null, double? LiftSpeedMmPerMin = null,
+    double? RetractDistanceMm = null, double? RetractSpeedMmPerMin = null,
+    double? BottomLiftDistanceMm = null, double? BottomLiftSpeedMmPerMin = null,
+    double? RestTimeAfterLiftMs = null, double? RestTimeAfterRetractMs = null,
+    string? AntiAliasing = null, string? ExportFormat = null);
 
 public record UpdateMachineProfileRequest(
     string? Name = null,
@@ -264,7 +353,25 @@ public record UpdateMachineProfileRequest(
     string? ExtruderAxes = null,
     string? CncAxes = null,
     bool? MotionAssignmentEnabled = null,
-    string? MotionAssignmentJson = null);
+    string? MotionAssignmentJson = null,
+    ResinSettingsDto? ResinSettings = null);
+
+public record ResinSettingsDto(
+    string? Orientation = null,
+    int? ResolutionX = null, int? ResolutionY = null,
+    double? PixelPitchUm = null,
+    bool? MirrorX = null, bool? MirrorY = null,
+    double? BuildOffsetXMm = null, double? BuildOffsetYMm = null,
+    double? DefaultLayerHeightMm = null, int? DefaultBottomLayerCount = null,
+    double? DefaultNormalExposureMs = null, double? DefaultBottomExposureMs = null,
+    double? LightOffDelayMs = null,
+    double? LiftDistanceMm = null, double? LiftSpeedMmPerMin = null,
+    double? RetractDistanceMm = null, double? RetractSpeedMmPerMin = null,
+    double? BottomLiftDistanceMm = null, double? BottomLiftSpeedMmPerMin = null,
+    double? RestTimeAfterLiftMs = null, double? RestTimeAfterRetractMs = null,
+    string? AntiAliasing = null, string? ExportFormat = null);
+
+public record DuplicateRequest(string? Name = null);
 
 public record UpdateOffsetsRequest(
     double X, double Y, double Z, double RotationDeg,

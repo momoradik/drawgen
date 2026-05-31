@@ -33,7 +33,7 @@ public static class ServiceExtensions
         var storageRoot = string.IsNullOrWhiteSpace(configuredRoot)
             ? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "HybridSlicer")
+                "Fabrium")
             : configuredRoot;
         Directory.CreateDirectory(storageRoot);
         Directory.CreateDirectory(Path.Combine(storageRoot, "jobs"));
@@ -51,6 +51,9 @@ public static class ServiceExtensions
         // ── Repositories ─────────────────────────────────────────────────────
         services.AddScoped<IMachineProfileRepository, MachineProfileRepository>();
         services.AddScoped<IPrintProfileRepository,   PrintProfileRepository>();
+        services.AddScoped<IResinPrintProfileRepository, ResinPrintProfileRepository>();
+        services.AddScoped<IResinMaterialRepository, ResinMaterialRepository>();
+        services.AddSingleton<Resin.ResinSlicerEngine>();
         services.AddScoped<IPrintJobRepository,       PrintJobRepository>();
         services.AddScoped<ICncToolRepository,        CncToolRepository>();
         services.AddScoped<ICustomGCodeBlockRepository, CustomGCodeBlockRepository>();

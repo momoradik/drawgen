@@ -5,16 +5,7 @@ import { brandingApi } from '../../api/client'
 const allNavItems = [
   { to: '/dashboard',         label: 'Dashboard',      icon: '⬛', devOnly: false },
   { to: '/import',            label: 'Import STL',     icon: '📁', devOnly: false },
-  { to: '/print-settings',    label: 'Print Settings', icon: '🖨️', devOnly: false },
-  { to: '/machine-config',    label: 'Machine Configuration', icon: '⚙️', devOnly: false },
-  { to: '/materials',         label: 'Materials',      icon: '🧵', devOnly: false },
-  { to: '/tools',             label: 'Tool Library',   icon: '🔧', devOnly: false },
-  { to: '/hybrid-planner',    label: 'CNC Polishing', icon: '🔀', devOnly: false },
-  { to: '/hybrid-preview',    label: 'Hybrid Preview', icon: '🎬', devOnly: false },
-  { to: '/custom-gcode',      label: 'G-code Customisation', icon: '📝', devOnly: false },
-  { to: '/calibration',       label: 'Calibration',    icon: '📐', devOnly: false },
-  { to: '/pellet-calibration', label: 'Pellet Calib.', icon: '🟡', devOnly: false },
-  { to: '/settings/branding', label: 'Branding',       icon: '🎨', devOnly: true  },
+  { to: '/printer-config',    label: 'Printer Config',  icon: '🖨', devOnly: false },
 ]
 
 const navItems = allNavItems.filter(n => !n.devOnly || import.meta.env.DEV)
@@ -28,13 +19,16 @@ export default function Sidebar() {
 
   return (
     <nav className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
-      <div className="px-4 py-5 border-b border-gray-800">
-        <h1 className="text-lg font-bold text-primary-400 truncate">
-          {branding?.appTitle ?? 'HybridSlicer'}
-        </h1>
-        {branding?.companyName && (
-          <p className="text-xs text-gray-500 mt-0.5">{branding.companyName}</p>
-        )}
+      <div className="px-4 py-4 border-b border-gray-800 flex items-center gap-3">
+        <img src="/logo.png" alt="" className="w-8 h-8 rounded-md" />
+        <div>
+          <h1 className="text-lg font-bold text-primary-400 truncate leading-tight">
+            {branding?.appTitle ?? 'Fabrium'}
+          </h1>
+          {branding?.companyName && (
+            <p className="text-xs text-gray-500">{branding.companyName}</p>
+          )}
+        </div>
       </div>
 
       <ul className="flex-1 py-3 space-y-0.5 overflow-y-auto">

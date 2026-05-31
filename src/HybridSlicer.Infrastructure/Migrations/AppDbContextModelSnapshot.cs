@@ -190,20 +190,81 @@ namespace HybridSlicer.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
+                    b.Property<int>("AntiAliasing")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("BackBedEdgeOffsetMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("BedCount")
+                        .HasColumnType("INTEGER");
+
                     b.Property<double>("BedDepthMm")
                         .HasColumnType("REAL");
 
                     b.Property<double>("BedHeightMm")
                         .HasColumnType("REAL");
 
+                    b.Property<double>("BedPositionXMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("BedPositionYMm")
+                        .HasColumnType("REAL");
+
                     b.Property<double>("BedWidthMm")
                         .HasColumnType("REAL");
+
+                    b.Property<string>("BedsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("Beds");
+
+                    b.Property<double>("BottomLiftDistanceMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("BottomLiftSpeedMmPerMin")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("BuildOffsetXMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("BuildOffsetYMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("CncAxes")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("TEXT");
 
+                    b.Property<double>("DefaultBottomExposureMs")
+                        .HasColumnType("REAL");
+
+                    b.Property<int>("DefaultBottomLayerCount")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("DefaultLayerHeightMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("DefaultNormalExposureMs")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("ExportFormat")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ExtruderAxes")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("ExtruderCount")
                         .HasColumnType("INTEGER");
+
+                    b.Property<double>("FrontBedEdgeOffsetMm")
+                        .HasColumnType("REAL");
 
                     b.Property<string>("IpAddress")
                         .HasColumnType("TEXT");
@@ -214,10 +275,39 @@ namespace HybridSlicer.Infrastructure.Migrations
                     b.Property<double>("LeftBedEdgeOffsetMm")
                         .HasColumnType("REAL");
 
+                    b.Property<double>("LiftDistanceMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("LiftSpeedMmPerMin")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("LightOffDelayMs")
+                        .HasColumnType("REAL");
+
+                    b.Property<bool>("MirrorX")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("MirrorY")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("MotionAssignmentEnabled")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("MotionAssignmentJson")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("TEXT");
+
+                    b.Property<string>("NozzleXOffsetsJson")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("[]")
+                        .HasColumnName("NozzleXOffsets");
 
                     b.Property<string>("NozzleYOffsetsJson")
                         .IsRequired()
@@ -226,13 +316,58 @@ namespace HybridSlicer.Infrastructure.Migrations
                         .HasDefaultValue("[]")
                         .HasColumnName("NozzleYOffsets");
 
+                    b.Property<int>("Orientation")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("OriginMode")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("TEXT")
+                        .HasDefaultValue("BedCenter");
+
+                    b.Property<double>("OriginXMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("OriginYMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("PixelPitchUm")
+                        .HasColumnType("REAL");
+
                     b.Property<int>("Port")
                         .HasColumnType("INTEGER");
+
+                    b.Property<int>("ResolutionX")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int>("ResolutionY")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<double>("RestTimeAfterLiftMs")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("RestTimeAfterRetractMs")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("RetractDistanceMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("RetractSpeedMmPerMin")
+                        .HasColumnType("REAL");
 
                     b.Property<double>("RightBedEdgeOffsetMm")
                         .HasColumnType("REAL");
 
                     b.Property<double>("SafeClearanceHeightMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("TravelXMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("TravelYMm")
+                        .HasColumnType("REAL");
+
+                    b.Property<double>("TravelZMm")
                         .HasColumnType("REAL");
 
                     b.Property<string>("Type")
@@ -312,6 +447,9 @@ namespace HybridSlicer.Infrastructure.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("TEXT");
 
+                    b.Property<int?>("BedIndex")
+                        .HasColumnType("INTEGER");
+
                     b.Property<Guid?>("CncToolId")
                         .HasColumnType("TEXT");
 
@@ -343,6 +481,9 @@ namespace HybridSlicer.Infrastructure.Migrations
                         .HasMaxLength(300)
                         .HasColumnType("TEXT");
 
+                    b.Property<Guid?>("ParentJobId")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("PrintGCodePath")
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
@@ -361,6 +502,13 @@ namespace HybridSlicer.Infrastructure.Migrations
 
                     b.Property<bool>("SupportEnabled")
                         .HasColumnType("INTEGER");
+
+                    b.Property<double?>("SupportInfillDensityPct")
+                        .HasColumnType("REAL");
+
+                    b.Property<string>("SupportInfillPattern")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
 
                     b.Property<string>("SupportPlacement")
                         .IsRequired()

@@ -16,7 +16,7 @@ public sealed class BrandingController : ControllerBase
     public async Task<IActionResult> Get(CancellationToken ct)
     {
         var settings = await _db.BrandingSettings.FirstOrDefaultAsync(ct);
-        if (settings is null) return Ok(new { CompanyName = "HybridSlicer", AppTitle = "HybridSlicer", PrimaryColor = "#2563EB", AccentColor = "#7C3AED" });
+        if (settings is null) return Ok(new { CompanyName = "Hybrid Manufacturing Platform", AppTitle = "Fabrium", PrimaryColor = "#2563EB", AccentColor = "#7C3AED" });
         return Ok(settings);
     }
 

@@ -14,7 +14,7 @@ Directory.CreateDirectory("logs");
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console(outputTemplate:
         "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}")
-    .WriteTo.File("logs/hybridslicer-.log",
+    .WriteTo.File("logs/fabrium-.log",
         rollingInterval: RollingInterval.Day,
         retainedFileCountLimit: 14)
     .MinimumLevel.Information()
@@ -28,7 +28,7 @@ try
     builder.Host.UseSerilog((ctx, _, cfg) =>
         cfg.ReadFrom.Configuration(ctx.Configuration)
            .WriteTo.Console()
-           .WriteTo.File("logs/hybridslicer-.log", rollingInterval: RollingInterval.Day));
+           .WriteTo.File("logs/fabrium-.log", rollingInterval: RollingInterval.Day));
 
     // ── Infrastructure (DB, repos, slicing, toolpath, safety, machine) ───────
     builder.Services.AddInfrastructure(builder.Configuration);
@@ -52,7 +52,7 @@ try
     {
         c.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
         {
-            Title   = "HybridSlicer API",
+            Title   = "Fabrium API",
             Version = "v1",
             Description = "Hybrid 3D-printing + CNC manufacturing platform API"
         });
@@ -95,7 +95,7 @@ try
     app.UseMiddleware<GlobalExceptionMiddleware>();
 
     app.UseSwagger();
-    app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "HybridSlicer v1"));
+    app.UseSwaggerUI(c => c.SwaggerEndpoint("/swagger/v1/swagger.json", "Fabrium v1"));
 
     app.UseSerilogRequestLogging();
     app.UseCors();
@@ -116,7 +116,7 @@ try
     app.MapHub<MachineHub>("/hubs/machine");
     app.MapFallbackToFile("index.html");
 
-    Log.Information("HybridSlicer API ready");
+    Log.Information("Fabrium API ready");
     await app.RunAsync();
 }
 catch (Exception ex)

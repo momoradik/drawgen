@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Fabrium</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0f172a; color: #e2e8f0;
+    height: 100vh; display: flex; flex-direction: column;
+    user-select: none; overflow: hidden;
+  }
+
+  /* ─── Header ──────────────────────────────── */
+  .header {
+    background: linear-gradient(135deg, #1e1b4b 0%, #1e293b 100%);
+    padding: 24px 28px 20px;
+    border-bottom: 1px solid rgba(99, 102, 241, 0.15);
+    display: flex; align-items: center; gap: 16px;
+  }
+  .logo {
+    width: 48px; height: 48px; border-radius: 14px; flex-shrink: 0;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    object-fit: contain;
+  }
+  .header-text h1 {
+    font-size: 22px; font-weight: 700; color: #f8fafc;
+    letter-spacing: -0.3px;
+  }
+  .header-text .version {
+    font-size: 11px; color: #818cf8; margin-top: 2px;
+    font-weight: 500; letter-spacing: 0.5px;
+  }
+
+  /* ─── Body ────────────────────────────────── */
+  .body { flex: 1; padding: 20px 28px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }
+
+  /* Status card */
+  .status-card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+    padding: 16px 20px; display: flex; align-items: center; gap: 14px;
+  }
+  .status-icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+  .status-icon.starting { background: rgba(245, 158, 11, 0.15); }
+  .status-icon.running  { background: rgba(34, 197, 94, 0.15); }
+  .status-icon.error    { background: rgba(239, 68, 68, 0.15); }
+  .status-info { flex: 1; }
+  .status-title { font-size: 14px; font-weight: 600; }
+  .status-title.starting { color: #fbbf24; }
+  .status-title.running  { color: #4ade80; }
+  .status-title.error    { color: #f87171; }
+  .status-sub { font-size: 12px; color: #64748b; margin-top: 2px; }
+  .pulse-dot {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  }
+  .pulse-dot.starting { background: #f59e0b; animation: pulse 2s infinite; }
+  .pulse-dot.running  { background: #22c55e; }
+  .pulse-dot.error    { background: #ef4444; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* Network card */
+  .network-card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+    padding: 16px 20px;
+  }
+  .network-top {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .network-label {
+    font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+    color: #6366f1; font-weight: 700;
+  }
+  .network-url {
+    font-size: 20px; font-weight: 700; color: #e2e8f0;
+    font-family: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+    word-break: break-all; line-height: 1.3;
+  }
+  .network-hint {
+    font-size: 11px; color: #475569; margin-top: 8px; line-height: 1.4;
+  }
+
+  /* Update banner */
+  .update-banner {
+    background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 12px; padding: 16px 20px;
+    display: none;
+    animation: slideIn 0.3s ease-out;
+  }
+  .update-banner.visible { display: block; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+  .update-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+  }
+  .update-badge {
+    background: #6366f1; color: white; font-size: 10px; font-weight: 700;
+    padding: 3px 8px; border-radius: 6px; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .update-title { font-size: 14px; font-weight: 600; color: #e2e8f0; }
+  .update-msg { font-size: 13px; color: #a5b4fc; margin-bottom: 12px; line-height: 1.4; }
+
+  .update-actions { display: flex; gap: 8px; }
+  .btn-update {
+    padding: 8px 20px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; transition: all 0.15s;
+  }
+  .btn-update:hover { transform: translateY(-1px); }
+  .btn-update.primary { background: #6366f1; color: white; }
+  .btn-update.primary:hover { background: #818cf8; }
+  .btn-update.ghost { background: transparent; color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
+  .btn-update.ghost:hover { background: rgba(99, 102, 241, 0.1); }
+
+  .progress-track {
+    height: 4px; background: rgba(99, 102, 241, 0.2); border-radius: 2px;
+    overflow: hidden; margin-top: 10px; display: none;
+  }
+  .progress-track.visible { display: block; }
+  .progress-fill { height: 100%; background: #6366f1; width: 0%; transition: width 0.3s; border-radius: 2px; }
+
+  /* Open button */
+  .btn-open {
+    padding: 14px 24px; border-radius: 12px; border: none; cursor: pointer;
+    font-size: 15px; font-weight: 600; transition: all 0.15s;
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    color: white; width: 100%;
+    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.25);
+  }
+  .btn-open:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35); }
+  .btn-open:active { transform: translateY(0); }
+
+  /* Footer */
+  .footer {
+    padding: 12px 28px; border-top: 1px solid #1e293b;
+    font-size: 11px; color: #475569; text-align: center;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .footer-left { opacity: 0.7; }
+  .footer-right { display: flex; align-items: center; gap: 10px; }
+  .footer-version { color: #6366f1; font-weight: 500; }
+  .btn-check-update {
+    background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.2);
+    color: #818cf8; font-size: 10px; font-weight: 600; padding: 3px 10px;
+    border-radius: 5px; cursor: pointer; transition: all 0.15s;
+  }
+  .btn-check-update:hover { background: rgba(99, 102, 241, 0.2); color: #a5b4fc; }
+  .btn-check-update:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-check-update.checking { animation: pulse 1.5s infinite; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <img class="logo" id="logoImg" src="" alt="Fabrium" />
+  <div class="header-text">
+    <h1>Fabrium</h1>
+    <div class="version" id="versionLabel">Hybrid Manufacturing Platform</div>
+  </div>
+</div>
+
+<div class="body">
+  <!-- Server status -->
+  <div class="status-card">
+    <div class="status-icon starting" id="statusIcon">
+      <div class="pulse-dot starting" id="pulseDot"></div>
+    </div>
+    <div class="status-info">
+      <div class="status-title starting" id="statusTitle">Starting Server...</div>
+      <div class="status-sub" id="statusSub">Initializing services</div>
+    </div>
+  </div>
+
+  <!-- Network address -->
+  <div class="network-card">
+    <div class="network-top">
+      <div class="network-label">Network Address</div>
+    </div>
+    <div class="network-url" id="urlValue">Detecting...</div>
+    <div class="network-hint">Users can access Fabrium at this address on the same network</div>
+  </div>
+
+  <!-- Update banner -->
+  <div class="update-banner" id="updateBanner">
+    <div class="update-header">
+      <span class="update-badge" id="updateBadge">Update</span>
+      <span class="update-title" id="updateTitle"></span>
+    </div>
+    <div class="update-msg" id="updateMsg"></div>
+    <div class="update-actions" id="updateActions"></div>
+    <div class="progress-track" id="progressTrack">
+      <div class="progress-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+  <!-- Open in browser -->
+  <button class="btn-open" onclick="window.chrome.webview.postMessage('open-browser')">Open Fabrium in Browser</button>
+</div>
+
+<div class="footer">
+  <span class="footer-left">Minimise to tray &middot; Right-click tray to quit</span>
+  <div class="footer-right">
+    <button class="btn-check-update" id="btnCheckUpdate" onclick="checkUpdate()">Check for Updates</button>
+    <span class="footer-version" id="footerVersion"></span>
+  </div>
+</div>
+
+<script>
+  var statusIcon  = document.getElementById('statusIcon');
+  var pulseDot    = document.getElementById('pulseDot');
+  var statusTitle = document.getElementById('statusTitle');
+  var statusSub   = document.getElementById('statusSub');
+  var urlEl       = document.getElementById('urlValue');
+  var versionLabel = document.getElementById('versionLabel');
+  var footerVersion = document.getElementById('footerVersion');
+  var updateBanner = document.getElementById('updateBanner');
+  var updateBadge  = document.getElementById('updateBadge');
+  var updateTitle  = document.getElementById('updateTitle');
+  var updateMsg    = document.getElementById('updateMsg');
+  var updateActions = document.getElementById('updateActions');
+  var progressTrack = document.getElementById('progressTrack');
+  var progressFill  = document.getElementById('progressFill');
+  var btnCheck = document.getElementById('btnCheckUpdate');
+
+  function apply(d) {
+    if (d.url) urlEl.textContent = d.url;
+    if (d.version) {
+      versionLabel.textContent = 'v' + d.version + ' \u2014 Hybrid Manufacturing Platform';
+      footerVersion.textContent = 'v' + d.version;
+    }
+
+    var s = d.status || 'starting';
+    statusIcon.className = 'status-icon ' + s;
+    pulseDot.className = 'pulse-dot ' + s;
+    statusTitle.className = 'status-title ' + s;
+
+    if (s === 'running') {
+      statusTitle.textContent = 'Server Running';
+      statusSub.textContent = 'All services operational';
+    } else if (s === 'error') {
+      statusTitle.textContent = 'Server Error';
+      statusSub.textContent = 'Check logs for details';
+    } else {
+      statusTitle.textContent = 'Starting Server...';
+      statusSub.textContent = 'Initializing services';
+    }
+
+    if (d.cura !== undefined) {
+      statusSub.textContent += d.cura ? ' \u00b7 CuraEngine ready' : ' \u00b7 CuraEngine not found';
+    }
+
+    // Update status
+    if (d.update) {
+      var u = d.update;
+      if (u === 'checking') {
+        btnCheck.disabled = true;
+        btnCheck.classList.add('checking');
+        btnCheck.textContent = 'Checking...';
+      } else if (u === 'downloading') {
+        updateBanner.classList.add('visible');
+        updateBadge.textContent = 'Downloading';
+        updateTitle.textContent = 'Downloading Update';
+        updateMsg.textContent = 'Downloading' + (d.updateVersion ? ' v' + d.updateVersion : '') + (d.updatePct != null ? '... ' + d.updatePct + '%' : '...');
+        updateActions.innerHTML = '';
+        progressTrack.classList.add('visible');
+        if (d.updatePct != null) progressFill.style.width = d.updatePct + '%';
+        btnCheck.textContent = 'Downloading...';
+      } else if (u === 'ready') {
+        progressTrack.classList.remove('visible');
+        updateBanner.classList.add('visible');
+        updateBadge.textContent = 'Ready';
+        updateTitle.textContent = 'Update Ready';
+        updateMsg.textContent = 'Fabrium v' + d.updateVersion + ' has been downloaded. Restart to apply the update.';
+        updateActions.innerHTML = '<button class="btn-update primary" onclick="window.chrome.webview.postMessage(\'apply-update\')">Restart Now</button><button class="btn-update ghost" onclick="document.getElementById(\'updateBanner\').classList.remove(\'visible\')">Later</button>';
+        btnCheck.textContent = 'Update Ready';
+        btnCheck.disabled = false;
+        btnCheck.classList.remove('checking');
+      } else if (u === 'uptodate') {
+        updateBanner.classList.remove('visible');
+        btnCheck.textContent = 'Up to date';
+        btnCheck.disabled = false;
+        btnCheck.classList.remove('checking');
+        setTimeout(function() { btnCheck.textContent = 'Check for Updates'; }, 3000);
+      } else if (u === 'error') {
+        updateBanner.classList.remove('visible');
+        btnCheck.textContent = 'Check failed';
+        btnCheck.disabled = false;
+        btnCheck.classList.remove('checking');
+        setTimeout(function() { btnCheck.textContent = 'Check for Updates'; }, 3000);
+      }
+    }
+  }
+
+  function checkUpdate() {
+    btnCheck.disabled = true;
+    btnCheck.classList.add('checking');
+    btnCheck.textContent = 'Checking...';
+    window.chrome.webview.postMessage('check-updates');
+  }
+
+  window.chrome.webview.addEventListener('message', function(e) { apply(e.data); });
+</script>
+</body>
+</html>

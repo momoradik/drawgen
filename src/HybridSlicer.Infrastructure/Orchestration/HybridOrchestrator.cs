@@ -43,7 +43,7 @@ public sealed partial class HybridOrchestrator : IHybridOrchestrator
 
         var output = new StringBuilder();
         output.AppendLine("; ============================================================");
-        output.AppendLine("; HybridSlicer — Hybrid Manufacturing G-code");
+        output.AppendLine("; Fabrium — Hybrid Manufacturing G-code");
         output.AppendLine($"; Generated : {DateTime.UtcNow:O}");
         output.AppendLine($"; Total layers     : {request.TotalPrintLayers}");
         output.AppendLine($"; Machine every N  : {request.MachineEveryNLayers}");
@@ -137,7 +137,7 @@ public sealed partial class HybridOrchestrator : IHybridOrchestrator
         AppendCustomBlocks(output, request.EnabledCustomBlocks, GCodeTrigger.JobEnd, plan, ref stepIndex);
 
         output.AppendLine("; ============================================================");
-        output.AppendLine("; End of HybridSlicer G-code");
+        output.AppendLine("; End of Fabrium G-code");
         output.AppendLine("; ============================================================");
 
         plan.SetOverallSafety(SafetyStatus.Clear);

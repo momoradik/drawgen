@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@microsoft/signalr": "^8.0.0",
@@ -20,6 +22,9 @@
     "zustand": "^4.4.7"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^18.2.46",
     "@types/react-dom": "^18.2.18",
     "@types/three": "^0.160.0",
@@ -29,9 +34,11 @@
     "autoprefixer": "^10.4.16",
     "eslint": "^8.56.0",
     "eslint-plugin-react-hooks": "^4.6.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.32",
     "tailwindcss": "^3.4.1",
     "typescript": "^5.3.3",
-    "vite": "^5.0.11"
+    "vite": "^5.0.11",
+    "vitest": "^4.1.8"
   }
 }

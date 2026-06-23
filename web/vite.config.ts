@@ -19,7 +19,12 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: '../src/HybridSlicer.Api/wwwroot',
+    outDir: '../../../build/wwwroot',
     emptyOutDir: true,
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.ts',
   },
 })

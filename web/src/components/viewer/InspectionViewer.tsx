@@ -25,6 +25,9 @@ interface Props {
   measured?: ImportedPart | null
   overlayMode?: OverlayMode
   rpsPoints?: { x: number; y: number; z: number }[]
+  rpsProjectedPoints?: { x: number; y: number; z: number; valid: boolean }[]
+  showRpsNominal?: boolean
+  showRpsProjected?: boolean
   className?: string
 }
 
@@ -61,7 +64,8 @@ function buildSpatialIndex(positions: number[], deviations: number[], cellSize: 
 }
 
 export default function InspectionViewer({
-  result, reference, measured, overlayMode = 'overlay', rpsPoints, className = '',
+  result, reference, measured, overlayMode = 'overlay', rpsPoints, rpsProjectedPoints,
+  showRpsNominal = true, showRpsProjected = true, className = '',
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
 
@@ -236,23 +240,47 @@ export default function InspectionViewer({
       addMarker(minIdx, 0x3333ff)
     }
 
-    // ── RPS point markers ─────────────────────────────────────────
-    // Tiny red dot at exact contact point + thin wireframe for findability.
-    if (rpsPoints && rpsPoints.length > 0) {
-      const rpsDot = maxDim * 0.001   // tiny precise dot
-      const rpsWire = maxDim * 0.005  // small wireframe outline
+    // ── RPS nominal point markers (red) ────────────────────────────
+    if (showRpsNominal && rpsPoints && rpsPoints.length > 0) {
+      const rpsDot = maxDim * 0.008
+      const rpsWire = maxDim * 0.015
       for (let i = 0; i < rpsPoints.length; i++) {
         const p = rpsPoints[i]
         const sphere = new THREE.Mesh(
-          new THREE.SphereGeometry(rpsDot, 10, 10),
-          new THREE.MeshBasicMaterial({ color: 0xff2222 })
+          new THREE.SphereGeometry(rpsDot, 12, 12),
+          new THREE.MeshBasicMaterial({ color: 0xff2222, depthTest: false })
         )
+        sphere.renderOrder = 999
         sphere.position.set(p.x, p.y, p.z)
         scene.add(sphere)
         const diamond = new THREE.Mesh(
           new THREE.OctahedronGeometry(rpsWire, 0),
-          new THREE.MeshBasicMaterial({ color: 0xff4444, wireframe: true, transparent: true, opacity: 0.5 })
+          new THREE.MeshBasicMaterial({ color: 0xff4444, wireframe: true, transparent: true, opacity: 0.7, depthTest: false })
         )
+        diamond.renderOrder = 998
+        diamond.position.set(p.x, p.y, p.z)
+        scene.add(diamond)
+      }
+    }
+
+    // ── RPS projected point markers (blue) ──────────────────────────
+    if (showRpsProjected && rpsProjectedPoints && rpsProjectedPoints.length > 0) {
+      const projDot = maxDim * 0.008
+      const projWire = maxDim * 0.015
+      for (let i = 0; i < rpsProjectedPoints.length; i++) {
+        const p = rpsProjectedPoints[i]
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(projDot, 12, 12),
+          new THREE.MeshBasicMaterial({ color: 0x2288ff, depthTest: false })
+        )
+        sphere.renderOrder = 999
+        sphere.position.set(p.x, p.y, p.z)
+        scene.add(sphere)
+        const diamond = new THREE.Mesh(
+          new THREE.OctahedronGeometry(projWire, 0),
+          new THREE.MeshBasicMaterial({ color: 0x4499ff, wireframe: true, transparent: true, opacity: 0.7, depthTest: false })
+        )
+        diamond.renderOrder = 998
         diamond.position.set(p.x, p.y, p.z)
         scene.add(diamond)
       }
@@ -286,7 +314,7 @@ export default function InspectionViewer({
       cancelAnimationFrame(animId); ro.disconnect(); controls.dispose(); renderer.dispose()
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement)
     }
-  }, [result, reference, measured, overlayMode, rpsPoints])
+  }, [result, reference, measured, overlayMode, rpsPoints, rpsProjectedPoints, showRpsNominal, showRpsProjected])
 
   // ── Legend ─────────────────────────────────────────────────────
   // Must exactly match the deviationToMetrologyColor function:
@@ -354,7 +382,10 @@ export default function InspectionViewer({
           <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-red-500" /> MAX</span>
           <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-blue-500" /> MIN</span>
           {rpsPoints && rpsPoints.length > 0 && (
-            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-red-500" /> RPS</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-red-500" /> RPS nom</span>
+          )}
+          {rpsProjectedPoints && rpsProjectedPoints.length > 0 && (
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-blue-400" /> RPS proj</span>
           )}
         </div>
       </div>
